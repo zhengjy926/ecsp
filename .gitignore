@@ -1,0 +1,3 @@
+# Build directories (CMake/CTest)
+/build/
+/build-*/
