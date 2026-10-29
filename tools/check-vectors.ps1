@@ -31,6 +31,7 @@ $specPath    = Join-Path $root 'docs/specs/ecsp-spec.md'
 $required = [ordered]@{
     '3.2'    = @{ Topic = 'CRC rules';              Rule = $true;  Min = 1 }
     '3.4.1'  = @{ Topic = 'basic request/response'; Rule = $true;  Min = 2 }
+    '4.1.2'  = @{ Topic = 'slave power-up report';  Rule = $true;  Min = 1 }
     '5.2.1'  = @{ Topic = 'handshake (3 frames)';   Rule = $false }
     '5.2.2'  = @{ Topic = 'version response';       Rule = $false }
     '5.2.3'  = @{ Topic = 'set hardware version';   Rule = $false }
@@ -44,6 +45,7 @@ $required = [ordered]@{
     '5.2.16' = @{ Topic = 'heartbeat';              Rule = $false }
     '5.2.17' = @{ Topic = 'fault report';           Rule = $false }
     '5.2.18' = @{ Topic = 'fault query';            Rule = $false }
+    '7.2.2'  = @{ Topic = 'slave heartbeat trigger'; Rule = $true; Min = 1 }
 }
 
 function Get-Crc16Modbus {

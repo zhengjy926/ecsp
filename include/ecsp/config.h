@@ -31,6 +31,16 @@
 #define ECSP_HOST_SLAVES 8
 #endif
 
+/* Heartbeat period in milliseconds (spec 5.2.16, 7.2.2). It is not a tick
+ * interval: a ready slave sends at most one heartbeat per ecsp_slave_step and
+ * only once a full period has passed since it last sent anything. A product
+ * that overrides it must adjust the host's dropout threshold (three periods,
+ * spec 7.2.1) to match. The waiting-state 0x01 report is fixed at 1 Hz by
+ * spec 4.1.2 and has no such knob. */
+#ifndef ECSP_HEARTBEAT_MS
+#define ECSP_HEARTBEAT_MS 1000u
+#endif
+
 /* Local error codes (docs/specs/ecsp-impl-spec.md section 3): functions return
  * 0 (ECSP_OK) on success and a negative value on failure. These are library
  * failure reasons, never protocol response codes - those live only inside

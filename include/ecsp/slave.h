@@ -20,9 +20,13 @@
  *   9 handler                   -> the handler's return code
  *
  * Ticket #5 implements the passthrough commands 0x01-0x07, 0x0B and 0x12;
- * ticket #6 adds the transaction-sequence replay for non-idempotent actions.
- * Common-command semantics live in the library; board commands (0x30-0xEF)
- * come from the caller's compile-time table (ADR-0001).
+ * ticket #6 adds the transaction-sequence replay for non-idempotent actions;
+ * ticket #7 adds the session timing: while it waits for a handshake the engine
+ * reports 0x01 at a fixed 1 Hz until the handshake succeeds, and once ready it
+ * reports a 0x10 heartbeat after every ECSP_HEARTBEAT_MS of silence
+ * (spec 4.1.2, 5.2.16, 7.2.2). Common-command semantics live in the library;
+ * board commands (0x30-0xEF) come from the caller's compile-time table
+ * (ADR-0001).
  */
 
 #include <stddef.h>
@@ -121,6 +125,15 @@ typedef struct {
 #define ECSP_SLAVE_TXN_SLOTS 1u
 #endif
 
+/* One wrap-safe millisecond timestamp (impl spec section 3) plus the flag that
+ * says whether it has been set yet: the library cannot read a clock at init, so
+ * the first ecsp_slave_step latches both clocks. Keeping the pair together
+ * keeps them from drifting apart. */
+typedef struct {
+    uint32_t at_ms;
+    uint8_t  valid;
+} ecsp_slave_clock_t;
+
 /* All buffers are caller-owned (ADR-0005): the library stores no pointer to
  * memory it does not receive here. */
 typedef struct {
@@ -141,6 +154,12 @@ struct ecsp_slave {
     ecsp_slave_cfg_t cfg;
     size_t rx_len;       /* bytes currently held in rx_buf */
     size_t tx_len;       /* bytes currently queued in tx_buf */
+    /* Session timing (spec 4.1.2, 5.2.16, 7.2.2): `last_send` gates the
+     * ready-state heartbeat window and is restarted by every queued frame;
+     * `last_report` drives the fixed 1 Hz 0x01 report while waiting for a
+     * handshake, which other traffic must not starve. */
+    ecsp_slave_clock_t last_send;
+    ecsp_slave_clock_t last_report;
     uint8_t ready;       /* 0 = waiting for handshake, 1 = ready (spec 4.1.2) */
     uint8_t fault_word;  /* copy of cfg.fault_word; runtime fault bits land here */
     uint8_t low_power_mode; /* last accepted 0x0B mode (5.2.11) */
@@ -168,7 +187,13 @@ void ecsp_slave_rx(ecsp_slave_t *s, const uint8_t *data, size_t len);
 
 /* Advance the state machine: drain the receive buffer through the frame
  * scanner and run every complete frame through the decision pipeline. `now_ms`
- * is reserved for the session-timing ticket and is currently unused. */
+ * is the caller's millisecond clock; the library never reads one. After the
+ * received frames are handled, one periodic frame is queued if it is due: a
+ * 0x01 report at a fixed 1 Hz while waiting for a handshake, or a 0x10
+ * heartbeat once ready and a full ECSP_HEARTBEAT_MS has passed since anything
+ * was sent (spec 4.1.2, 5.2.16, 7.2.2). Any queued frame restarts the
+ * heartbeat window. The first call latches the clocks, so the first periodic
+ * frame is due one period later; comparisons are wrap-safe. */
 void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
 
 /* Last low-power mode accepted by 0x0B (ECSP_LOW_POWER_EXIT /

@@ -6,6 +6,7 @@
 
 #include "ecsp/cmds.h"
 #include "ecsp/frame.h"
+#include "session.h"
 #include "txn_cache.h"
 
 /* Maximum response DATA bytes a single answer may carry (the frame payload is
@@ -59,7 +60,11 @@ static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
     (void)cap;
     *resp_len = 0u;
     /* Answer first, enter the ready state afterwards (spec 5.2.1). The engine
-     * applies the state change only once the answer is queued. */
+     * applies the state change only once the answer is queued. When the slave
+     * is already ready this is the "host reset unexpectedly" case: answer 0x00,
+     * stay ready and do not resume the 0x01 report stream (spec 4.1.4). The
+     * other half of 4.1.4 - aborting in-flight business - has no execution
+     * axis to abort yet; it arrives with the long-running ticket. */
     s->pending_ready = 1u;
     return ECSP_RS_OK;
 }
@@ -250,6 +255,10 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->cfg = *cfg;
     s->rx_len = 0u;
     s->tx_len = 0u;
+    s->last_send.at_ms = 0u;
+    s->last_send.valid = 0u;
+    s->last_report.at_ms = 0u;
+    s->last_report.valid = 0u;
     s->ready = 0u;
     s->fault_word = cfg->fault_word;
     s->low_power_mode = 0u;
@@ -317,11 +326,14 @@ static void rx_drop_front(ecsp_slave_t *s, size_t n)
     shift_front(s->cfg.rx_buf, &s->rx_len, n);
 }
 
-/* Emit a response frame into the transmit FIFO. Returns 1 on success, 0 when
- * the FIFO lacks room for the whole frame (the caller keeps the request frame
- * and resumes after draining). */
-static int answer(ecsp_slave_t *s, uint8_t cmd,
-                  const uint8_t *payload, uint16_t payload_len)
+/* Emit a frame into the transmit FIFO. Returns 1 on success, 0 when the FIFO
+ * lacks room for the whole frame (the caller keeps the request frame and
+ * resumes after draining). Every frame that is queued restarts the heartbeat
+ * window: from this library's point of view a frame is sent once the caller
+ * owns it in the FIFO (spec 7.2.2). */
+static int send_frame(ecsp_slave_t *s, uint8_t cmd,
+                      const uint8_t *payload, uint16_t payload_len,
+                      uint32_t now_ms)
 {
     size_t frame_len = ECSP_FRAME_MIN_LEN + (size_t)payload_len;
     size_t n;
@@ -337,13 +349,14 @@ static int answer(ecsp_slave_t *s, uint8_t cmd,
         return 0;
     }
     s->tx_len += n;
+    ecsp_session_note_sent(s, now_ms);
     return 1;
 }
 
 /* Emit a single-byte (response-code only) answer. */
-static int answer_rs(ecsp_slave_t *s, uint8_t cmd, uint8_t rs)
+static int answer_rs(ecsp_slave_t *s, uint8_t cmd, uint8_t rs, uint32_t now_ms)
 {
-    return answer(s, cmd, &rs, 1u);
+    return send_frame(s, cmd, &rs, 1u, now_ms);
 }
 
 /* Apply the state changes a handler requested, but only after its answer has
@@ -374,13 +387,31 @@ static void apply_pending_state(ecsp_slave_t *s)
     }
 }
 
+/* Emit the periodic frame when the session module says one is due. At most one
+ * per step, so a stalled caller clock cannot release a burst. */
+static void report_if_due(ecsp_slave_t *s, uint32_t now_ms)
+{
+    uint8_t cmd = ecsp_session_due_report(s, now_ms);
+
+    /* A periodic report carries no payload and no response code (spec 5.2.1
+     * and 5.2.16 examples are minimal frames). A full FIFO defers it: nothing
+     * went out, so the report cadence must not advance and the next step
+     * retries. */
+    if (cmd != 0u && send_frame(s, cmd, NULL, 0u, now_ms)) {
+        ecsp_session_note_report(s, now_ms);
+    }
+}
+
 void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
 {
-    (void)now_ms;
-
     if (s == NULL) {
         return;
     }
+
+    /* The session clocks have no value before the first step: latch them so
+     * the first periodic frame is due a full period later, not immediately
+     * (spec 4.1.2 "after power-up ... reports at 1 Hz"). */
+    ecsp_session_start(s, now_ms);
 
     for (;;) {
         ecsp_frame_t frame;
@@ -428,7 +459,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             board = find_board_cmd(s, frame.cmd);
         }
         if (common == NULL && board == NULL) {
-            if (!answer_rs(s, frame.cmd, ECSP_RS_UNSUPPORTED)) {
+            if (!answer_rs(s, frame.cmd, ECSP_RS_UNSUPPORTED, now_ms)) {
                 break;
             }
             rx_drop_front(s, consumed);
@@ -438,7 +469,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         /* Step 4: session. Only the handshake may arrive before the session is
          * established (spec 4.1.2). */
         if (frame.cmd != ECSP_CMD_HANDSHAKE && !s->ready) {
-            if (!answer_rs(s, frame.cmd, ECSP_RS_NOT_HANDSHAKEN)) {
+            if (!answer_rs(s, frame.cmd, ECSP_RS_NOT_HANDSHAKEN, now_ms)) {
                 break;
             }
             rx_drop_front(s, consumed);
@@ -448,7 +479,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         /* Step 5: payload length. */
         req_len = (common != NULL) ? common->req_len : board->req_len;
         if (req_len != ECSP_CMD_LEN_ANY && frame.payload_len != req_len) {
-            if (!answer_rs(s, frame.cmd, ECSP_RS_BAD_LEN)) {
+            if (!answer_rs(s, frame.cmd, ECSP_RS_BAD_LEN, now_ms)) {
                 break;
             }
             rx_drop_front(s, consumed);
@@ -477,6 +508,8 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
                 }
                 memcpy(&s->cfg.tx_buf[s->tx_len], cached, cached_len);
                 s->tx_len += cached_len;
+                /* A replayed answer is still a frame on the wire (spec 7.2.2). */
+                ecsp_session_note_sent(s, now_ms);
                 rx_drop_front(s, consumed);
                 continue;
             }
@@ -495,7 +528,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
                 if (v != ECSP_OK) {
                     uint8_t rs = (v == ECSP_E_LEN) ? ECSP_RS_BAD_LEN
                                                    : ECSP_RS_BAD_PARAM;
-                    if (!answer_rs(s, frame.cmd, rs)) {
+                    if (!answer_rs(s, frame.cmd, rs, now_ms)) {
                         break;
                     }
                     rx_drop_front(s, consumed);
@@ -536,7 +569,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
                               ? (uint16_t)(1u + data_len)
                               : 1u;
             tx_start = s->tx_len;
-            if (!answer(s, frame.cmd, payload, payload_len)) {
+            if (!send_frame(s, frame.cmd, payload, payload_len, now_ms)) {
                 break;
             }
             if (has_seq != 0) {
@@ -553,6 +586,12 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
 
         rx_drop_front(s, consumed);
     }
+
+    /* Received frames were answered first: a ready slave that just answered
+     * needs no heartbeat yet, because the answer restarted the window
+     * (spec 7.2.2). The waiting-state 0x01 report is on its own fixed cadence
+     * and is therefore not suppressed by answers (spec 4.1.2). */
+    report_if_due(s, now_ms);
 }
 
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s)

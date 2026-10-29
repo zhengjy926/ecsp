@@ -30,6 +30,11 @@ ECSP_VECTOR(handshake_report, "FA 09 00 03 01 02 88 50 0D", "spec 5.2.1")
 ECSP_VECTOR(handshake_req,    "FA 09 00 03 01 02 88 50 0D", "spec 5.2.1")
 ECSP_VECTOR(handshake_resp,   "FA 0A 00 03 01 02 00 50 55 0D", "spec 5.2.1")
 
+/* 4.1.2 power-up session: the waiting slave repeats the 5.2.1 report frame at a
+ * fixed 1 Hz until the handshake succeeds, so the same bytes are the golden
+ * frame for this clause too. */
+ECSP_VECTOR(session_report, "FA 09 00 03 01 02 88 50 0D", "spec 4.1.2")
+
 /* 5.2.2 software version request / response ("1.0.0.0"). The response CRC low
  * byte is 0xFA - the scanner must not break this frame on it. */
 ECSP_VECTOR(version_req,  "FA 09 00 03 02 02 88 A0 0D", "spec 5.2.2")
@@ -67,6 +72,11 @@ ECSP_VECTOR(upgrade_report, "FA 0A 00 03 0E 02 00 60 56 0D", "spec 5.2.14")
 
 /* 5.2.16 heartbeat. */
 ECSP_VECTOR(heartbeat, "FA 09 00 03 10 02 84 00 0D", "spec 5.2.16")
+
+/* 7.2.2 slave liveness: after a heartbeat period without sending anything the
+ * slave repeats the 5.2.16 heartbeat frame; the same bytes are the golden frame
+ * for this clause. */
+ECSP_VECTOR(session_heartbeat, "FA 09 00 03 10 02 84 00 0D", "spec 7.2.2")
 
 /* 5.2.17 fault report (fault word 0x01 = bit0 self-test failure). */
 ECSP_VECTOR(fault_report, "FA 0A 00 03 11 02 01 90 50 0D", "spec 5.2.17")
