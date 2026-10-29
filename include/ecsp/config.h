@@ -27,4 +27,14 @@
 #define ECSP_HOST_SLAVES 8
 #endif
 
+/* Local error codes (docs/specs/ecsp-impl-spec.md section 3): functions return
+ * 0 (ECSP_OK) on success and a negative value on failure. These are library
+ * failure reasons, never protocol response codes - those live only inside
+ * frames (spec 3.6). Grown per ticket: only what this slice returns is defined
+ * here; later tickets add codes as their functions need them. */
+enum {
+    ECSP_OK    = 0,
+    ECSP_E_ARG = -1   /* invalid argument or configuration */
+};
+
 #endif /* ECSP_CONFIG_H */
