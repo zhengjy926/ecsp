@@ -23,6 +23,7 @@ add_library(ecsp_core STATIC
   src/ecsp/core/crc.c
   src/ecsp/core/bytes.c
   src/ecsp/core/frame.c
+  src/ecsp/core/cmds.c
   src/ecsp/slave/engine.c
 )
 target_include_directories(ecsp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -43,11 +44,16 @@ add_executable(test_frame test/unit/test_frame.c)
 target_link_libraries(test_frame PRIVATE ecsp_core)
 ecsp_enable_warnings(test_frame)
 
+add_executable(test_cmds test/unit/test_cmds.c)
+target_link_libraries(test_cmds PRIVATE ecsp_core)
+ecsp_enable_warnings(test_cmds)
+
 add_executable(test_slave test/unit/test_slave.c)
 target_link_libraries(test_slave PRIVATE ecsp_core)
 ecsp_enable_warnings(test_slave)
 
 add_test(NAME frame COMMAND test_frame)
+add_test(NAME cmds COMMAND test_cmds)
 add_test(NAME slave COMMAND test_slave)
 
 # Vector/spec cross-check (PowerShell); runs under ctest as well.
