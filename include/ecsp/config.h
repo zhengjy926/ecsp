@@ -33,8 +33,10 @@
  * frames (spec 3.6). Grown per ticket: only what this slice returns is defined
  * here; later tickets add codes as their functions need them. */
 enum {
-    ECSP_OK    = 0,
-    ECSP_E_ARG = -1   /* invalid argument or configuration */
+    ECSP_OK     = 0,
+    ECSP_E_ARG  = -1,  /* invalid argument or configuration */
+    ECSP_E_LEN  = -2,  /* payload length does not match the command (-> 0x02) */
+    ECSP_E_VAL  = -3   /* payload length is right but the value is illegal (-> 0x03) */
 };
 
 #endif /* ECSP_CONFIG_H */

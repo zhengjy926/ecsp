@@ -120,9 +120,12 @@ size_t ecsp_frame_encode(uint8_t *buf, size_t cap,
 
 ```c
 typedef struct { uint8_t b[7]; } ecsp_version_t;   /* "X.Y.Z.N" 定长 7 字节 */
+typedef struct { uint8_t b[12]; } ecsp_serial_t;    /* "SN"+10 位数字，定长 12 字节 */
 
 int ecsp_version_parse(const uint8_t *p, size_t n, ecsp_version_t *v);
 int ecsp_version_equals(const ecsp_version_t *a, const ecsp_version_t *b); /* 逐字节 */
+int ecsp_serial_parse(const uint8_t *p, size_t n, ecsp_serial_t *sn);
+int ecsp_low_power_mode_valid(uint8_t mode);                                /* 0x00 / 0x01 */
 ```
 
 约定：
@@ -130,7 +133,7 @@ int ecsp_version_equals(const ecsp_version_t *a, const ecsp_version_t *b); /* �
 * 事务序号（非幂等动作类首字节）由 L2 的 `ecsp_txn_seq(req)` 取出，缓存键为 `(cmd, seq)`。
 * 长耗时命令的受理应答载荷为 `[RS][T_exec_max u16le]`；非受理应答不带该字段。
 * 结果事件帧不带应答码。
-* 载荷长度校验返回 `ECSP_E_LEN`，由 L3 映射为 0x02；字段取值非法返回 `ECSP_E_VAL`，映射为 0x03。
+* 载荷长度校验返回 `ECSP_E_LEN`，由 L3 映射为 0x02；字段取值非法返回 `ECSP_E_VAL`，映射为 0x03。硬件版本与软件版本同用 7 字节 `X.Y.Z.N` 布局；序列号必须是 `SN` + 10 位 ASCII 数字。
 
 命令按票据分摊，避免"谁都该做、谁都没做"：
 
@@ -150,22 +153,36 @@ typedef enum {
     ECSP_CMD_IDEMPOTENT = 1u << 1   /* 幂等动作：不带事务序号 */
 } ecsp_cmd_flags_t;
 
+typedef int (*ecsp_cmd_validate_t)(const ecsp_frame_t *req);  /* ECSP_OK / ECSP_E_LEN / ECSP_E_VAL */
+
 typedef struct {
     uint8_t  cmd;
     uint8_t  flags;
+    uint16_t req_len;  /* 请求载荷精确长度；ECSP_CMD_LEN_ANY = 由 validate 校验 */
+    uint16_t resp_max; /* 应答数据（不含应答码）最大长度 */
+    ecsp_cmd_validate_t validate;  /* 可选的第 8 步参数校验 */
     ecsp_slave_handler_t handler;
 } ecsp_cmd_entry_t;
 
 typedef struct {
-    const ecsp_cmd_entry_t *table;   /* 使用方的编译期常量表，按 cmd 升序 */
+    const ecsp_cmd_entry_t *table;   /* 使用方的编译期常量表（0x30~0xEF） */
     size_t table_len;
 } ecsp_cmd_table_t;
+
+typedef struct {
+    ecsp_version_t hardware_version; /* 0x03 写、0x04 读 */
+    ecsp_serial_t  serial_number;    /* 0x05 写、0x06 读 */
+} ecsp_slave_identity_t;
 
 int  ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg);
 void ecsp_slave_rx(ecsp_slave_t *s, const uint8_t *data, size_t len); /* 中断/收包回调里唯一允许的调用 */
 void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
 int  ecsp_slave_send_event(ecsp_slave_t *s, uint8_t cmd, const uint8_t *payload, uint16_t len);
+uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
+int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
 ```
+
+`ecsp_slave_cfg_t` 还传入：`identity`（调用方持有的标识存储，0x03/0x05 原地写入，使用方据此自行落 NVM）、`fault_word`（0x12 返回的注入故障字）、`cmds`（0x30~0xEF 板卡命令表）。发送缓冲至少容纳最大的通用应答或板卡表声明的 `resp_max` 应答；`ecsp_slave_init` 会拒绝过小的缓冲。命令可以声明 `validate`（第 8 步）：返回 `ECSP_E_LEN` 映射 0x02，返回 `ECSP_E_VAL` 映射 0x03。handler 只写应答载荷的**数据**部分（不含应答码），返回值即应答码；框架不覆盖该返回值，非 0x00 应答不携带数据。命令表只用于板卡命令，通用命令 0x01~0x12 的语义由库内处理。
 
 **处理管线顺序固定**（ADR-0002），一次只写一遍，handler 内不得重复：
 
@@ -181,7 +198,9 @@ int  ecsp_slave_send_event(ecsp_slave_t *s, uint8_t cmd, const uint8_t *payload,
 | 8 | 参数校验失败 | 0x03 |
 | 9 | 执行 handler，其返回值即应答码 | handler 的返回值 |
 
-管线由 `engine.c` 一处实现；新增拒绝条件必须落到上表某一步。
+管线由 `engine.c` 一处实现；新增拒绝条件必须落到上表某一步。第 5 步的长度由命令表的 `req_len` 声明；`ECSP_CMD_LEN_ANY` 表示命令自有变长载荷，由该命令的 `validate` 在第 8 步校验并返回 `ECSP_E_LEN`（映射 0x02）。第 8 步对通用命令使用库内校验函数，对板卡命令使用命令表注入的 `validate`；handler 不重复上述任何判定。
+
+**0x07 / 0x0B 的平台边界**：库不做硬件驱动（第 1 章）。0x07 在应答入队后回到等待握手并置位 `ecsp_slave_reset_requested`；产品必须在发送 FIFO 排空后执行实际复位。0x0B 只记录请求的模式，产品用 `ecsp_slave_low_power_mode` 读取并执行进入/退出低功耗。0x03/0x05 的 0x00 表示已写入调用方的 `identity` 存储；落 NVM 由使用方负责（库不做持久化）。
 
 **会话与心跳**：从机侧有两条轴——会话（`等待握手` / `就绪`）与执行（`空闲` / `忙`），对应主机侧看到的会话状态与事务状态。等待握手时以 1 Hz 上报 0x01；就绪后按 `ECSP_HEARTBEAT_MS`（默认 1000，±10%）上报 0x10；`last_send_ms` 在任一主动帧或应答帧发出后刷新（规范 7.2.2）。
 
@@ -249,7 +268,7 @@ CRC 字节在文件里写成实际值，不写 `CRC16` 占位——向量必须�
 **三层测试**：
 
 1. `test/unit/`：逐函数，输入输出确定性；
-2. `test/unit/pipeline.c`：同一帧同时命中多个拒绝条件时返回哪个应答码（这是 ADR-0002 的可执行表述）；
+2. `test/unit/test_pipeline.c`：同一帧同时命中多个拒绝条件时返回哪个应答码（这是 ADR-0002 的可执行表述）；
 3. `test/integ/two_instance.c`：一个主机上下文 + 一个从机上下文，经虚拟链路（字节数组 + 丢包/超时注入）跑完握手→版本核对→业务命令→掉线→重连。
 
 **每个 PR 的三件套**（ADR-0001）：规范正文 diff（若行为有变）+ 向量 + 实现。缺一不合并。

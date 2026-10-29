@@ -41,6 +41,7 @@ static const uint8_t version_1_0_0_9[7] = { '1', '.', '0', '.', '0', '.', '9' };
 static uint8_t g_rx[ECSP_MAX_FRAME];
 static uint8_t g_tx[2u * ECSP_MAX_FRAME];
 static ecsp_slave_t g_slave;
+static ecsp_slave_identity_t g_identity;
 
 static ecsp_version_t make_version(const uint8_t b[7])
 {
@@ -49,12 +50,24 @@ static ecsp_version_t make_version(const uint8_t b[7])
     return v;
 }
 
-static void init_slave_version(const uint8_t version[7])
+static void init_slave_cfg(const uint8_t version[7], uint8_t fault_word)
 {
     ecsp_slave_cfg_t cfg;
+    static const uint8_t default_hw[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t default_sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    g_identity.hardware_version = make_version(default_hw);
+    memcpy(g_identity.serial_number.b, default_sn, sizeof default_sn);
+
     cfg.product_addr = 0x03u;
     cfg.board_addr   = 0x02u;
     cfg.version      = make_version(version);
+    cfg.identity     = &g_identity;
+    cfg.fault_word   = fault_word;
+    cfg.cmds.table   = NULL;
+    cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;
     cfg.rx_cap = sizeof g_rx;
     cfg.tx_buf = g_tx;
@@ -62,9 +75,63 @@ static void init_slave_version(const uint8_t version[7])
     CHECK_EQ(0, ecsp_slave_init(&g_slave, &cfg));
 }
 
+static void init_slave_version(const uint8_t version[7])
+{
+    init_slave_cfg(version, 0x00u);
+}
+
 static void init_slave(void)
 {
     init_slave_version(version_1_0_0_0);
+}
+
+static void init_slave_fault(uint8_t fault_word)
+{
+    init_slave_cfg(version_1_0_0_0, fault_word);
+}
+
+static void drain_all(void)
+{
+    ecsp_slave_tx_drain(&g_slave, ecsp_slave_tx_pending(&g_slave));
+}
+
+/* Feed one frame for this node (P=0x03/B=0x02) and advance the engine. */
+static void send_cmd(uint8_t cmd, const uint8_t *payload, uint16_t len)
+{
+    uint8_t frame[ECSP_MAX_FRAME];
+    size_t n = ecsp_frame_encode(frame, sizeof frame, 0x03u, 0x02u, cmd,
+                                 payload, len);
+
+    CHECK(n > 0u);
+    ecsp_slave_rx(&g_slave, frame, n);
+    ecsp_slave_step(&g_slave, 0u);
+}
+
+/* Assert the whole transmit FIFO is exactly one response frame carrying
+ * [rs] + data, then drain it. */
+static void expect_resp(uint8_t cmd, uint8_t rs,
+                        const uint8_t *data, uint16_t data_len)
+{
+    uint8_t payload[ECSP_MAX_FRAME];
+    uint8_t want[ECSP_MAX_FRAME];
+    size_t want_len;
+
+    payload[0] = rs;
+    if (data_len > 0u) {
+        memcpy(&payload[1], data, data_len);
+    }
+    want_len = ecsp_frame_encode(want, sizeof want, 0x03u, 0x02u, cmd,
+                                 payload, (uint16_t)(1u + data_len));
+
+    CHECK_EQ(want_len, ecsp_slave_tx_pending(&g_slave));
+    CHECK_MEM(want, want_len, g_tx, ecsp_slave_tx_pending(&g_slave));
+    drain_all();
+}
+
+static void enter_ready(void)
+{
+    send_cmd(ECSP_CMD_HANDSHAKE, NULL, 0u);
+    drain_all();
 }
 
 static void test_handshake_responds(void)
@@ -97,6 +164,10 @@ static void test_handshake_echoes_node_addresses(void)
     cfg.product_addr = 0x10u;
     cfg.board_addr   = 0x20u;
     cfg.version      = make_version(version_1_0_0_0);
+    cfg.identity     = &g_identity;
+    cfg.fault_word   = 0x00u;
+    cfg.cmds.table   = NULL;
+    cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;
     cfg.rx_cap = sizeof g_rx;
     cfg.tx_buf = g_tx;
@@ -337,6 +408,256 @@ static void test_version_with_payload_length_error(void)
     CHECK_MEM(resp, sizeof resp, g_tx, ecsp_slave_tx_pending(&g_slave));
 }
 
+/* ---- ticket #5: passthrough commands ---- */
+
+static void test_set_and_get_hardware_version(void)
+{
+    /* spec 5.2.3 / 5.2.4: a successful write is visible verbatim through the
+     * get command, and lands in the caller-owned identity storage. */
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, hw, sizeof hw));
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, hw, sizeof hw);
+}
+
+static void test_bad_length_hardware_version_keeps_stored_value(void)
+{
+    /* spec 5.2.3 / 6.2: a length error is 0x02 and must not change the saved
+     * value. */
+    static const uint8_t bad[6] = { '1', '.', '0', '.', '0', '.' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, bad, sizeof bad);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_BAD_LEN, NULL, 0u);
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, stored, sizeof stored);
+}
+
+static void test_bad_parameter_hardware_version_keeps_stored_value(void)
+{
+    /* Right length, wrong "X.Y.Z.N" shape: 0x03, never 0x02, and unchanged. */
+    static const uint8_t bad[7] = { '1', '.', '0', '.', '0', '.', 'X' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, bad, sizeof bad);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_BAD_PARAM, NULL, 0u);
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, stored, sizeof stored);
+}
+
+static void test_set_and_get_serial_number(void)
+{
+    /* spec 5.2.5 / 5.2.6. */
+    static const uint8_t sn[12] = {
+        'S', 'N', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+    };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_SERIAL, sn, sizeof sn);
+    expect_resp(ECSP_CMD_SET_SERIAL, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(0, memcmp(g_identity.serial_number.b, sn, sizeof sn));
+
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, sn, sizeof sn);
+}
+
+static void test_bad_length_serial_keeps_stored_value(void)
+{
+    static const uint8_t bad[11] = {
+        'S', 'N', '1', '2', '3', '4', '5', '6', '7', '8', '9'
+    };
+    static const uint8_t stored[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_SERIAL, bad, sizeof bad);
+    expect_resp(ECSP_CMD_SET_SERIAL, ECSP_RS_BAD_LEN, NULL, 0u);
+
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, stored, sizeof stored);
+}
+
+static void test_bad_parameter_serial_keeps_stored_value(void)
+{
+    static const uint8_t bad[12] = {
+        'S', 'N', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'X'
+    };
+    static const uint8_t stored[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_SERIAL, bad, sizeof bad);
+    expect_resp(ECSP_CMD_SET_SERIAL, ECSP_RS_BAD_PARAM, NULL, 0u);
+
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, stored, sizeof stored);
+}
+
+static void test_low_power_mode(void)
+{
+    /* spec 5.2.11: modes 0x00 and 0x01 are accepted; anything else is 0x03;
+     * a missing mode byte is a length error 0x02. */
+    static const uint8_t exit_mode[1] = { ECSP_LOW_POWER_EXIT };
+    static const uint8_t enter_mode[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t bad_mode[1] = { 0x02u };
+
+    init_slave();
+    enter_ready();
+
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+
+    send_cmd(ECSP_CMD_SET_LOW_POWER, exit_mode, sizeof exit_mode);
+    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+
+    send_cmd(ECSP_CMD_SET_LOW_POWER, enter_mode, sizeof enter_mode);
+    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+
+    send_cmd(ECSP_CMD_SET_LOW_POWER, bad_mode, sizeof bad_mode);
+    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_BAD_PARAM, NULL, 0u);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+
+    send_cmd(ECSP_CMD_SET_LOW_POWER, NULL, 0u);
+    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_BAD_LEN, NULL, 0u);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+}
+
+static void test_get_fault_returns_injected_word(void)
+{
+    /* spec 5.2.18: the injected fault word is returned verbatim after 0x00. */
+    static const uint8_t fault[1] = { 0x05u };
+
+    init_slave_fault(fault[0]);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, fault, sizeof fault);
+}
+
+static void test_get_fault_before_handshake_is_rejected(void)
+{
+    init_slave_fault(0x05u);
+
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_NOT_HANDSHAKEN, NULL, 0u);
+}
+
+static void test_system_reset_answers_then_waits_for_handshake(void)
+{
+    /* spec 5.2.7: the answer exists before the reset takes effect, and after
+     * the reset the session is back to waiting for a handshake. The product
+     * observes the request and performs the actual MCU reset after draining. */
+    static const uint8_t seq[1] = { 0x42u };
+    static const uint8_t enter_mode[1] = { ECSP_LOW_POWER_ENTER };
+
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_LOW_POWER, enter_mode, sizeof enter_mode);
+    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+    CHECK_EQ(0, ecsp_slave_reset_requested(&g_slave));
+
+    send_cmd(ECSP_CMD_SYSTEM_RESET, seq, sizeof seq);
+    expect_resp(ECSP_CMD_SYSTEM_RESET, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, ecsp_slave_reset_requested(&g_slave));
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+
+    send_cmd(ECSP_CMD_GET_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_VERSION, ECSP_RS_NOT_HANDSHAKEN, NULL, 0u);
+}
+
+static void test_system_reset_with_bad_length_does_not_reset(void)
+{
+    /* A length error (0x02) is decided before the handler, so it must not
+     * reset the session. */
+    init_slave();
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SYSTEM_RESET, NULL, 0u);
+    expect_resp(ECSP_CMD_SYSTEM_RESET, ECSP_RS_BAD_LEN, NULL, 0u);
+    CHECK_EQ(0, ecsp_slave_reset_requested(&g_slave));
+
+    send_cmd(ECSP_CMD_GET_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_VERSION, ECSP_RS_OK, version_1_0_0_0, 7u);
+}
+
+static void test_init_rejects_incomplete_configuration(void)
+{
+    ecsp_slave_cfg_t cfg;
+    static const uint8_t sw_version[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    static const ecsp_cmd_entry_t big_response[] = {
+        { 0x30u, ECSP_CMD_NONE, 0u, 40u, NULL, NULL }
+    };
+    static const ecsp_cmd_entry_t oversized_response[] = {
+        { 0x30u, ECSP_CMD_NONE, 0u, ECSP_MAX_FRAME, NULL, NULL }
+    };
+
+    cfg.product_addr = 0x03u;
+    cfg.board_addr   = 0x02u;
+    cfg.version      = make_version(sw_version);
+    cfg.identity     = &g_identity;
+    cfg.fault_word   = 0u;
+    cfg.cmds.table   = NULL;
+    cfg.cmds.table_len = 0u;
+    cfg.rx_buf = g_rx;
+    cfg.rx_cap = sizeof g_rx;
+    cfg.tx_buf = g_tx;
+    cfg.tx_cap = sizeof g_tx;
+
+    /* The identity storage is mandatory: 0x03/0x05 have nowhere to write
+     * without it. */
+    cfg.identity = NULL;
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_init(&g_slave, &cfg));
+
+    /* The transmit FIFO must hold the largest common answer (get serial:
+     * 9-byte frame + response code + 12-byte serial). */
+    cfg.identity = &g_identity;
+    cfg.tx_cap = ECSP_FRAME_MIN_LEN + 1u + ECSP_SERIAL_LEN - 1u;
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_init(&g_slave, &cfg));
+
+    /* A non-empty table cannot have a NULL pointer. */
+    cfg.tx_cap = sizeof g_tx;
+    cfg.cmds.table_len = 1u;
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_init(&g_slave, &cfg));
+
+    /* The FIFO must also fit the largest response declared by the table, and
+     * a declaration larger than a frame is invalid. */
+    cfg.cmds.table = big_response;
+    cfg.tx_cap = ECSP_FRAME_MIN_LEN + 1u + big_response[0].resp_max - 1u;
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_init(&g_slave, &cfg));
+    cfg.tx_cap = ECSP_FRAME_MIN_LEN + 1u + big_response[0].resp_max;
+    CHECK_EQ(ECSP_OK, ecsp_slave_init(&g_slave, &cfg));
+
+    cfg.cmds.table = oversized_response;
+    cfg.tx_cap = sizeof g_tx;
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_init(&g_slave, &cfg));
+}
+
 int main(void)
 {
     test_handshake_responds();
@@ -355,6 +676,18 @@ int main(void)
     test_version_after_handshake();
     test_version_reports_injected_bytes_verbatim();
     test_version_with_payload_length_error();
+    test_set_and_get_hardware_version();
+    test_bad_length_hardware_version_keeps_stored_value();
+    test_bad_parameter_hardware_version_keeps_stored_value();
+    test_set_and_get_serial_number();
+    test_bad_length_serial_keeps_stored_value();
+    test_bad_parameter_serial_keeps_stored_value();
+    test_low_power_mode();
+    test_get_fault_returns_injected_word();
+    test_get_fault_before_handshake_is_rejected();
+    test_system_reset_answers_then_waits_for_handshake();
+    test_system_reset_with_bad_length_does_not_reset();
+    test_init_rejects_incomplete_configuration();
 
     return ecsp_test_report();
 }

@@ -33,9 +33,13 @@ $required = [ordered]@{
     '3.4.1'  = @{ Topic = 'basic request/response'; Rule = $true;  Min = 2 }
     '5.2.1'  = @{ Topic = 'handshake (3 frames)';   Rule = $false }
     '5.2.2'  = @{ Topic = 'version response';       Rule = $false }
+    '5.2.3'  = @{ Topic = 'set hardware version';   Rule = $false }
+    '5.2.4'  = @{ Topic = 'get hardware version';   Rule = $false }
     '5.2.5'  = @{ Topic = 'set serial number';      Rule = $false }
     '5.2.6'  = @{ Topic = 'get serial number';      Rule = $false }
+    '5.2.7'  = @{ Topic = 'system reset';           Rule = $false }
     '5.2.10' = @{ Topic = 'self-test report';       Rule = $false }
+    '5.2.11' = @{ Topic = 'set low-power mode';     Rule = $false }
     '5.2.14' = @{ Topic = 'upgrade report';         Rule = $false }
     '5.2.16' = @{ Topic = 'heartbeat';              Rule = $false }
     '5.2.17' = @{ Topic = 'fault report';           Rule = $false }

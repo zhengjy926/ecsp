@@ -52,9 +52,14 @@ add_executable(test_slave test/unit/test_slave.c)
 target_link_libraries(test_slave PRIVATE ecsp_core)
 ecsp_enable_warnings(test_slave)
 
+add_executable(test_pipeline test/unit/test_pipeline.c)
+target_link_libraries(test_pipeline PRIVATE ecsp_core)
+ecsp_enable_warnings(test_pipeline)
+
 add_test(NAME frame COMMAND test_frame)
 add_test(NAME cmds COMMAND test_cmds)
 add_test(NAME slave COMMAND test_slave)
+add_test(NAME pipeline COMMAND test_pipeline)
 
 # Vector/spec cross-check (PowerShell); runs under ctest as well.
 find_program(POWERSHELL_EXECUTABLE powershell)
