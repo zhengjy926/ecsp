@@ -566,26 +566,28 @@ static void test_get_fault_before_handshake_is_rejected(void)
     expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_NOT_HANDSHAKEN, NULL, 0u);
 }
 
-static void test_system_reset_answers_then_waits_for_handshake(void)
+static void test_system_reset_answers_and_requests_reset(void)
 {
-    /* spec 5.2.7: the answer exists before the reset takes effect, and after
-     * the reset the session is back to waiting for a handshake. The product
-     * observes the request and performs the actual MCU reset after draining. */
+    /* spec 5.2.7: the answer exists before the reset takes effect. The library
+     * only raises the reset request; the product performs the actual MCU reset
+     * after draining, and that reset re-initialises this context - which is
+     * where the session returns to waiting for a handshake and the transaction
+     * cache is emptied. Until then the session is left untouched, so a
+     * retransmitted 0x07 can replay its answer instead of being refused 0x10
+     * (ticket #6, spec 4.2). */
     static const uint8_t seq[1] = { 0x42u };
-    static const uint8_t enter_mode[1] = { ECSP_LOW_POWER_ENTER };
 
     init_slave();
     enter_ready();
-
-    send_cmd(ECSP_CMD_SET_LOW_POWER, enter_mode, sizeof enter_mode);
-    expect_resp(ECSP_CMD_SET_LOW_POWER, ECSP_RS_OK, NULL, 0u);
-    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
     CHECK_EQ(0, ecsp_slave_reset_requested(&g_slave));
 
     send_cmd(ECSP_CMD_SYSTEM_RESET, seq, sizeof seq);
     expect_resp(ECSP_CMD_SYSTEM_RESET, ECSP_RS_OK, NULL, 0u);
     CHECK_EQ(1, ecsp_slave_reset_requested(&g_slave));
-    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+
+    /* Re-initialising models the reset the product performs after draining. */
+    init_slave();
+    CHECK_EQ(0, ecsp_slave_reset_requested(&g_slave));
 
     send_cmd(ECSP_CMD_GET_VERSION, NULL, 0u);
     expect_resp(ECSP_CMD_GET_VERSION, ECSP_RS_NOT_HANDSHAKEN, NULL, 0u);
@@ -685,7 +687,7 @@ int main(void)
     test_low_power_mode();
     test_get_fault_returns_injected_word();
     test_get_fault_before_handshake_is_rejected();
-    test_system_reset_answers_then_waits_for_handshake();
+    test_system_reset_answers_and_requests_reset();
     test_system_reset_with_bad_length_does_not_reset();
     test_init_rejects_incomplete_configuration();
 

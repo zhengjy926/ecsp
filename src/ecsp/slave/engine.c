@@ -6,6 +6,7 @@
 
 #include "ecsp/cmds.h"
 #include "ecsp/frame.h"
+#include "txn_cache.h"
 
 /* Maximum response DATA bytes a single answer may carry (the frame payload is
  * the response code plus this data). */
@@ -122,6 +123,14 @@ static int h_system_reset(ecsp_slave_t *s, const ecsp_frame_t *req,
     (void)resp;
     (void)cap;
     *resp_len = 0u;
+    /* A previous reset sequence is still in progress: its answer is queued and
+     * the product resets after draining. A second, different transaction must
+     * not start a concurrent reset, so it is answered 0x11 (spec 5.2.7, 4.4).
+     * A retransmission of the same transaction never reaches this handler - it
+     * replays the cached answer. */
+    if (s->reset_requested != 0u) {
+        return ECSP_RS_BUSY;
+    }
     /* Answer first, reset afterwards (spec 5.2.7); the engine applies the
      * reset once the answer is queued. */
     s->pending_reset = 1u;
@@ -164,8 +173,8 @@ static const common_cmd_t g_common_cmds[] = {
       h_set_serial_number },
     { ECSP_CMD_GET_SERIAL, 0u, 0u, ECSP_SERIAL_LEN, NULL,
       h_get_serial_number },
-    { ECSP_CMD_SYSTEM_RESET, ECSP_CMD_PREEMPTIVE, ECSP_TXN_SEQ_LEN, 0u, NULL,
-      h_system_reset },
+    { ECSP_CMD_SYSTEM_RESET, (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
+      ECSP_TXN_SEQ_LEN, 0u, NULL, h_system_reset },
     { ECSP_CMD_SET_LOW_POWER, 0u, 1u, 0u, valid_low_power_mode,
       h_set_low_power },
     { ECSP_CMD_GET_FAULT, 0u, 0u, 1u, NULL, h_get_fault },
@@ -247,6 +256,9 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->pending_ready = 0u;
     s->pending_reset = 0u;
     s->reset_requested = 0u;
+    /* A soft reset empties the transaction cache (ADR-0004). Re-initialising
+     * the context is how this library models that reset. */
+    ecsp_txn_cache_clear(s);
     return ECSP_OK;
 }
 
@@ -341,16 +353,23 @@ static void apply_pending_state(ecsp_slave_t *s)
     if (s->pending_ready) {
         s->pending_ready = 0u;
         s->ready = 1u;
-        /* A handshake request also clears the transaction cache (ADR-0004);
-         * that lands with ticket #6. */
+        /* Every accepted handshake empties the transaction cache (ADR-0004):
+         * the transaction sequence belongs to one run of the host, and a host
+         * that restarts begins its counters at 0 again. A handshake the
+         * pipeline rejected (wrong length) is not a restart signal and does not
+         * get to change state. */
+        ecsp_txn_cache_clear(s);
     }
     if (s->pending_reset) {
         s->pending_reset = 0u;
-        /* Soft reset: back to waiting for a handshake. The transaction cache
-         * is cleared here once it exists (ADR-0004). The product performs the
-         * actual MCU reset after draining the queued answer. */
-        s->ready = 0u;
-        s->low_power_mode = 0u;
+        /* The product performs the actual MCU reset after draining the queued
+         * answer. That reset re-initialises this context, and the
+         * re-initialisation is where the session goes back to "waiting for a
+         * handshake" and the transaction cache is emptied - not here. Between
+         * the answer and the reset a retransmitted 0x07 with the same sequence
+         * has to replay its answer (spec 4.2); clearing the session now would
+         * answer 0x10 instead, which the host cannot tell apart from a
+         * rejection. */
         s->reset_requested = 1u;
     }
 }
@@ -370,6 +389,9 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         const ecsp_cmd_entry_t *board;
         uint16_t req_len;
         size_t max_data;
+        uint8_t flags;
+        uint8_t seq;
+        int has_seq;
         ecsp_scan_t sc = ecsp_frame_scan(s->cfg.rx_buf, s->rx_len,
                                          &frame, &consumed);
 
@@ -433,7 +455,33 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             continue;
         }
 
-        /* Step 6: transaction cache hit -> replay (ADR-0004, later ticket). */
+        /* Step 6: transaction cache. Only a non-idempotent action command is
+         * deduplicated, and its first payload byte is the transaction sequence
+         * (spec 4.2). A retransmit that hits the cache replays the earlier
+         * answer frame byte for byte and never re-enters the handler, so a
+         * physical action cannot happen twice (ADR-0004). The session gate is
+         * earlier, so a cached entry can never resurrect a dead session. */
+        flags = (common != NULL) ? common->flags : board->flags;
+        has_seq = ((flags & (uint8_t)ECSP_CMD_TXN_SEQ) != 0u &&
+                   frame.payload_len >= ECSP_TXN_SEQ_LEN) ? 1 : 0;
+        seq = (has_seq != 0) ? frame.payload[0] : 0u;
+        if (has_seq != 0) {
+            const uint8_t *cached = NULL;
+            size_t cached_len = 0u;
+
+            if (ecsp_txn_cache_lookup(s, frame.cmd, seq, &cached, &cached_len)) {
+                if (s->cfg.tx_cap - s->tx_len < cached_len) {
+                    /* No room for the replay yet: keep the request frame and
+                     * resume after the caller drains the FIFO. */
+                    break;
+                }
+                memcpy(&s->cfg.tx_buf[s->tx_len], cached, cached_len);
+                s->tx_len += cached_len;
+                rx_drop_front(s, consumed);
+                continue;
+            }
+        }
+
         /* Step 7: long-running busy -> 0x11 (later ticket). */
 
         /* Step 8: parameters. The command's validator decides whether a bad
@@ -461,6 +509,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         {
             uint8_t payload[ECSP_MAX_FRAME - ECSP_FRAME_MIN_LEN];
             size_t data_len = 0u;
+            size_t tx_start;
             int rs;
             uint16_t payload_len;
             ecsp_slave_handler_t handler =
@@ -486,8 +535,18 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             payload_len = (rs == ECSP_RS_OK)
                               ? (uint16_t)(1u + data_len)
                               : 1u;
+            tx_start = s->tx_len;
             if (!answer(s, frame.cmd, payload, payload_len)) {
                 break;
+            }
+            if (has_seq != 0) {
+                /* Cache the answer exactly as queued, so a retransmit replays
+                 * the same bytes without running the handler. An answer that
+                 * does not fit a cache slot is still delivered to the host;
+                 * store reports ECSP_E_CAP and nothing is remembered. */
+                (void)ecsp_txn_cache_store(s, frame.cmd, seq,
+                                           &s->cfg.tx_buf[tx_start],
+                                           s->tx_len - tx_start);
             }
             apply_pending_state(s);
         }

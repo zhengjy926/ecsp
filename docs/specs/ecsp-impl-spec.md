@@ -75,7 +75,7 @@ CMakeLists.txt             只用于本机测试，库源码不依赖 CMake
 | --- | --- | --- |
 | `ECSP_MAX_FRAME` | 128 | 单帧上限（字节）。板卡规范声明的最大帧长不得小于此值才可用本库 |
 | `ECSP_ENABLE_SLAVE` / `ECSP_ENABLE_HOST` | 1 / 1 | 分层裁剪 |
-| `ECSP_SLAVE_TXN_CACHE` | 4 | 事务缓存条目数；0 表示关闭去重（不推荐） |
+| `ECSP_SLAVE_TXN_CACHE` | 4 | 事务缓存条目数（每条目约占 `ECSP_MAX_FRAME` + 4 字节上下文 RAM）；0 表示关闭去重（不推荐） |
 | `ECSP_HOST_SLAVES` | 8 | 每个主机上下文可管理的从机槽位数 |
 
 ## 4 L1 帧层
@@ -130,7 +130,7 @@ int ecsp_low_power_mode_valid(uint8_t mode);                                /* 0
 
 约定：
 
-* 事务序号（非幂等动作类首字节）由 L2 的 `ecsp_txn_seq(req)` 取出，缓存键为 `(cmd, seq)`。
+* 事务序号（非幂等动作类首字节）由 L3 的第 6 步从 `req->payload[0]` 取出，缓存键为 `(cmd, seq)`；命令表用 `ECSP_CMD_TXN_SEQ` 标记哪些命令带事务序号。`ECSP_CMD_LEN_ANY` 的命令若收到空载荷，就没有序号可作键，此时按普通请求处理（不缓存）。
 * 长耗时命令的受理应答载荷为 `[RS][T_exec_max u16le]`；非受理应答不带该字段。
 * 结果事件帧不带应答码。
 * 载荷长度校验返回 `ECSP_E_LEN`，由 L3 映射为 0x02；字段取值非法返回 `ECSP_E_VAL`，映射为 0x03。硬件版本与软件版本同用 7 字节 `X.Y.Z.N` 布局；序列号必须是 `SN` + 10 位 ASCII 数字。
@@ -150,7 +150,8 @@ typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
 typedef enum {
     ECSP_CMD_NONE       = 0,
     ECSP_CMD_PREEMPTIVE = 1u << 0,  /* 长耗时执行中仍须受理（如停止命令） */
-    ECSP_CMD_IDEMPOTENT = 1u << 1   /* 幂等动作：不带事务序号 */
+    ECSP_CMD_IDEMPOTENT = 1u << 1,  /* 幂等动作：不带事务序号 */
+    ECSP_CMD_TXN_SEQ    = 1u << 2   /* 非幂等动作：载荷首字节即事务序号，应答按 (cmd, seq) 缓存并回放 */
 } ecsp_cmd_flags_t;
 
 typedef int (*ecsp_cmd_validate_t)(const ecsp_frame_t *req);  /* ECSP_OK / ECSP_E_LEN / ECSP_E_VAL */
@@ -200,11 +201,11 @@ int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
 
 管线由 `engine.c` 一处实现；新增拒绝条件必须落到上表某一步。第 5 步的长度由命令表的 `req_len` 声明；`ECSP_CMD_LEN_ANY` 表示命令自有变长载荷，由该命令的 `validate` 在第 8 步校验并返回 `ECSP_E_LEN`（映射 0x02）。第 8 步对通用命令使用库内校验函数，对板卡命令使用命令表注入的 `validate`；handler 不重复上述任何判定。
 
-**0x07 / 0x0B 的平台边界**：库不做硬件驱动（第 1 章）。0x07 在应答入队后回到等待握手并置位 `ecsp_slave_reset_requested`；产品必须在发送 FIFO 排空后执行实际复位。0x0B 只记录请求的模式，产品用 `ecsp_slave_low_power_mode` 读取并执行进入/退出低功耗。0x03/0x05 的 0x00 表示已写入调用方的 `identity` 存储；落 NVM 由使用方负责（库不做持久化）。
+**0x07 / 0x0B 的平台边界**：库不做硬件驱动（第 1 章）。0x07 在应答入队后只置位 `ecsp_slave_reset_requested`；产品必须在发送 FIFO 排空后执行实际复位，该复位重新初始化上下文，会话回到等待握手、事务缓存清空都发生在那一刻（见 ADR-0008）。库内不提前清空会话与缓存：复位真正发生前，重传的同一 `(0x07, seq)` 必须回放原应答，若先清会话就会回 0x10，主机无法与"被拒绝"区分；窗口内不同事务序号的新 0x07 则应答 0x11（规范 5.2.7、4.4 第 5 条），不执行并发复位。0x0B 只记录请求的模式，产品用 `ecsp_slave_low_power_mode` 读取并执行进入/退出低功耗。0x03/0x05 的 0x00 表示已写入调用方的 `identity` 存储；落 NVM 由使用方负责（库不做持久化）。
 
 **会话与心跳**：从机侧有两条轴——会话（`等待握手` / `就绪`）与执行（`空闲` / `忙`），对应主机侧看到的会话状态与事务状态。等待握手时以 1 Hz 上报 0x01；就绪后按 `ECSP_HEARTBEAT_MS`（默认 1000，±10%）上报 0x10；`last_send_ms` 在任一主动帧或应答帧发出后刷新（规范 7.2.2）。
 
-**事务缓存**（ADR-0004）：FIFO，键 `(cmd, seq)`，存完整应答帧副本（长度受 `ECSP_MAX_FRAME` 约束）。**软复位后清空**，**每收到一次握手请求（0x01）也清空**。
+**事务缓存**（ADR-0004）：FIFO，键 `(cmd, seq)`，存完整应答帧副本，每条目 `ECSP_MAX_FRAME` 字节。缓存容量耗尽时覆盖最旧条目。**软复位后清空**（在本库里就是重新初始化上下文），**每收到一次被受理的握手请求（0x01）也清空**（被管线拒绝的握手不算——一帧坏帧不该把在途事务的保护清掉）。超过一个缓存槽长度的应答照常发给主机，只是不缓存；`ecsp_frame_encode` 已把帧限制在 `ECSP_MAX_FRAME` 内，因此该分支是防御性的，不构成可达状态。
 
 **长耗时命令**：受理时置"忙"，启动 `now + T_exec_max`；到点未完成则后续获取结果应答 `0x00/0x11`（规范 4.3）；完成或中止时发结果事件并清"忙"。忙期间安全抢占类命令（如停止）必须放行——由命令表里的 `ecsp_cmd_flags` 标记，不硬编码命令码。系统复位（0x07）是通用层规定的抢占命令，不经命令表、不看标志位：忙期间到达时必须先走安全中止序列再应答复位（规范 4.4，ADR-0007）。
 

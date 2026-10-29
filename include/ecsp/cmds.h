@@ -75,6 +75,7 @@ typedef struct {
 #define ECSP_RS_BAD_PARAM      0x03u
 #define ECSP_RS_UNSUPPORTED    0x04u
 #define ECSP_RS_NOT_HANDSHAKEN 0x10u
+#define ECSP_RS_BUSY           0x11u /* operation busy (spec 3.6) */
 
 /* Low-power mode values (spec 5.2.11). */
 #define ECSP_LOW_POWER_EXIT  0x00u

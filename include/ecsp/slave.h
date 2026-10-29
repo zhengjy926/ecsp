@@ -14,12 +14,13 @@
  *   3 undefined command (including a Slave->Host event code) -> 0x04
  *   4 session not established and command != 0x01 -> 0x10
  *   5 payload length mismatch   -> 0x02
- *   6 transaction cache hit     -> replay (later ticket)
+ *   6 transaction cache hit     -> replay the cached answer frame
  *   7 long-running busy         -> 0x11 (later ticket)
  *   8 invalid parameter         -> 0x03
  *   9 handler                   -> the handler's return code
  *
- * Ticket #5 implements the passthrough commands 0x01-0x07, 0x0B and 0x12.
+ * Ticket #5 implements the passthrough commands 0x01-0x07, 0x0B and 0x12;
+ * ticket #6 adds the transaction-sequence replay for non-idempotent actions.
  * Common-command semantics live in the library; board commands (0x30-0xEF)
  * come from the caller's compile-time table (ADR-0001).
  */
@@ -58,8 +59,20 @@ typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
 typedef enum {
     ECSP_CMD_NONE       = 0,
     ECSP_CMD_PREEMPTIVE = 1u << 0,  /* must be accepted while long-running (4.4) */
-    ECSP_CMD_IDEMPOTENT = 1u << 1   /* idempotent action: carries no transaction seq */
+    ECSP_CMD_IDEMPOTENT = 1u << 1,  /* idempotent action: carries no transaction seq */
+    ECSP_CMD_TXN_SEQ    = 1u << 2   /* non-idempotent action: payload[0] is the
+                                     * transaction sequence, and the answer is
+                                     * cached by (cmd, seq) and replayed (4.2) */
 } ecsp_cmd_flags_t;
+
+/* Commands that carry a transaction sequence set ECSP_CMD_TXN_SEQ: their first
+ * request payload byte is the one-byte sequence, and the engine caches the
+ * complete answer frame under (command, sequence). A retransmission with the
+ * same pair is answered from the cache - byte for byte, without running the
+ * handler again - so a non-idempotent physical action happens at most once per
+ * transaction (spec 4.2). Getters, setters and idempotent actions carry no
+ * sequence and are never deduplicated; a command sets at most one of
+ * ECSP_CMD_IDEMPOTENT and ECSP_CMD_TXN_SEQ. */
 
 /* Exact request payload length for a command that has not declared one; the
  * command's validator owns the length check (returning ECSP_E_LEN -> 0x02). */
@@ -90,6 +103,24 @@ typedef struct {
     ecsp_serial_t  serial_number;    /* "SN" + 10 digits (5.2.5 / 5.2.6) */
 } ecsp_slave_identity_t;
 
+/* One cached answer (private): the (command, sequence) key plus the complete
+ * answer frame exactly as it was put on the wire. ECSP_MAX_FRAME bytes cover
+ * any frame the encoder can produce (spec 4.2, ADR-0004). */
+typedef struct {
+    uint8_t  cmd;
+    uint8_t  seq;
+    uint16_t frame_len;
+    uint8_t  frame[ECSP_MAX_FRAME];
+} ecsp_slave_txn_entry_t;
+
+/* Slots reserved in the context. ECSP_SLAVE_TXN_CACHE = 0 turns deduplication
+ * off; one slot is still reserved so the array stays legal C99. */
+#if ECSP_SLAVE_TXN_CACHE > 0
+#define ECSP_SLAVE_TXN_SLOTS ECSP_SLAVE_TXN_CACHE
+#else
+#define ECSP_SLAVE_TXN_SLOTS 1u
+#endif
+
 /* All buffers are caller-owned (ADR-0005): the library stores no pointer to
  * memory it does not receive here. */
 typedef struct {
@@ -114,14 +145,21 @@ struct ecsp_slave {
     uint8_t fault_word;  /* copy of cfg.fault_word; runtime fault bits land here */
     uint8_t low_power_mode; /* last accepted 0x0B mode (5.2.11) */
     uint8_t pending_ready;  /* apply "ready" after the handshake answer is queued */
-    uint8_t pending_reset;  /* apply the reset after the 0x07 answer is queued */
+    uint8_t pending_reset;  /* raise the reset request after the 0x07 answer */
     uint8_t reset_requested; /* 0x07 answered; product must reset after the drain */
+    /* Transaction-sequence cache (ADR-0004): FIFO of the most recent answers to
+     * non-idempotent action commands, keyed by (command, sequence). */
+    ecsp_slave_txn_entry_t txn_cache[ECSP_SLAVE_TXN_SLOTS];
+    size_t txn_cache_head;  /* index of the oldest live entry */
+    size_t txn_cache_count; /* live entries, 0 .. ECSP_SLAVE_TXN_SLOTS */
 };
 
 /* Initialise *s from *cfg. Returns ECSP_OK, or ECSP_E_ARG if a buffer/identity
  * pointer is NULL, rx_buf cannot hold the smallest legal frame, tx_buf cannot
  * hold the largest answer declared by the common commands or the board
- * command table, or the command table pointer/length disagree. */
+ * command table, or the command table pointer/length disagree. A fresh context
+ * has an empty transaction cache and waits for a handshake: initialising is how
+ * a soft reset is modelled (spec 4.2, ADR-0004). */
 int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg);
 
 /* Append received bytes (ADR-0005: the only call allowed from an interrupt or
@@ -138,11 +176,13 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
  * the product applies it. Returns EXIT for a NULL context. */
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
 
-/* 1 once a 0x07 answer has been queued (the session is back to waiting for a
- * handshake). The product must drain the transmit FIFO and then reset the
- * MCU; the library cannot perform the hardware reset itself. Stays set until
- * the context is re-initialised by that reset. Returns 0 for an unset context
- * or before a reset request. */
+/* 1 once a 0x07 answer has been queued. The product must drain the transmit
+ * FIFO and then reset the MCU; the library cannot perform the hardware reset
+ * itself. Until that reset re-initialises the context, the session and the
+ * transaction cache stay as they were, so a retransmitted 0x07 with the same
+ * sequence replays its answer instead of being refused 0x10. Stays set until
+ * the context is re-initialised. Returns 0 for an unset context or before a
+ * reset request. */
 int ecsp_slave_reset_requested(const ecsp_slave_t *s);
 
 /* Number of outbound bytes queued, oldest first. */

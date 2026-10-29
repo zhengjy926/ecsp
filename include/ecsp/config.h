@@ -19,6 +19,10 @@
 #define ECSP_ENABLE_HOST 1
 #endif
 
+/* Transaction-sequence cache entries (spec 4.2). Each entry holds one complete
+ * answer frame, so it costs about ECSP_MAX_FRAME + 4 bytes of context RAM;
+ * 0 turns deduplication off (not recommended: a retransmitted non-idempotent
+ * action would then execute twice). */
 #ifndef ECSP_SLAVE_TXN_CACHE
 #define ECSP_SLAVE_TXN_CACHE 4
 #endif
@@ -36,7 +40,8 @@ enum {
     ECSP_OK     = 0,
     ECSP_E_ARG  = -1,  /* invalid argument or configuration */
     ECSP_E_LEN  = -2,  /* payload length does not match the command (-> 0x02) */
-    ECSP_E_VAL  = -3   /* payload length is right but the value is illegal (-> 0x03) */
+    ECSP_E_VAL  = -3,  /* payload length is right but the value is illegal (-> 0x03) */
+    ECSP_E_CAP  = -4   /* a destination buffer is too small for the data */
 };
 
 #endif /* ECSP_CONFIG_H */
