@@ -22,8 +22,7 @@
 
 typedef struct ecsp_host ecsp_host_t;
 
-/* Session axis for one slave (spec table 4-1). The transaction axis is a
- * later ticket; offline is part of the table and is not entered here. */
+/* Session axis for one slave (spec table 4-1). */
 typedef enum {
     ECSP_SESS_DISCONNECTED = 0, /* 未连接 */
     ECSP_SESS_HANDSHAKING,      /* 握手中 */
@@ -41,19 +40,32 @@ typedef enum {
     ECSP_HOST_EV_VERSION_MISMATCH, /* 0x02 answered a different version */
     ECSP_HOST_EV_REJECTED,         /* peer answered, and the code was not 0x00;
                                     * not retried (spec table 6-1) */
-    ECSP_HOST_EV_LINK_FAULT        /* the frame would not fit in the transmit
+    ECSP_HOST_EV_LINK_FAULT,       /* the frame would not fit in the transmit
                                     * FIFO (spec 6.2); not "no answer" */
+    ECSP_HOST_EV_OFFLINE           /* heartbeat dropout, or the session
+                                    * establishment window ran out (7.2.1, 4.1.1) */
 } ecsp_host_event_t;
+
+/* Transaction axis for one slave (spec table 4-2). Wait-result is the
+ * long-running state and is not entered by this slice. */
+typedef enum {
+    ECSP_TXN_IDLE = 0,     /* 空闲 */
+    ECSP_TXN_QUEUED,       /* 待发送 */
+    ECSP_TXN_WAIT_RESP,    /* 等待应答 */
+    ECSP_TXN_WAIT_RESULT   /* 等待结果 */
+} ecsp_txn_state_t;
 
 typedef void (*ecsp_host_event_cb_t)(ecsp_host_t *h, uint8_t board_addr,
                                      ecsp_host_event_t event, void *user);
 
-/* One submitted transaction's outcome. A later ticket retains this and
- * delivers it once on the step stack. This slice accepts the pointer and
- * neither retains nor calls it. */
+/* Delivered once, on the ecsp_host_step stack, when a submitted transaction
+ * ends. `status` is ECSP_OK when an answer arrived (`response_code` and
+ * `payload` are that answer, payload excluding the response code). A silence
+ * limit passes ECSP_E_TIMEOUT, heartbeat dropout passes ECSP_E_OFFLINE, and a
+ * full transmit FIFO passes ECSP_E_LINK. */
 typedef void (*ecsp_txn_cb_t)(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
-                              uint8_t response_code, const uint8_t *payload,
-                              uint16_t len, void *user);
+                              int status, uint8_t response_code,
+                              const uint8_t *payload, uint16_t len, void *user);
 
 /* One slave the host brings up. `expect_version` is the 7-byte software
  * version this product requires (spec 9.2); it is compared raw, not parsed. */
@@ -85,10 +97,20 @@ typedef struct {
     uint8_t        phase;
     uint8_t        attempt;
     uint32_t       sent_ms;
-    uint8_t        user_pending;
-    uint8_t        user_cmd;
-    uint16_t       user_len;
-    uint8_t        user_payload[ECSP_MAX_FRAME];
+    uint8_t        txn_state; /* ecsp_txn_state_t */
+    uint8_t        txn_cmd;
+    uint8_t        txn_attempt;
+    uint8_t        txn_defer; /* submitted during step: send on the next step */
+    uint16_t       txn_len;
+    uint32_t       txn_sent_ms;
+    ecsp_txn_cb_t  txn_cb;
+    void          *txn_user;
+    uint8_t        txn_payload[ECSP_MAX_FRAME];
+    uint32_t       last_rx_ms;
+    uint8_t        last_rx_valid;
+    uint32_t       bringup_ms;
+    uint8_t        bringup_valid;
+    uint8_t        bringup_open;
 } ecsp_host_slot_t;
 
 struct ecsp_host {
@@ -111,6 +133,8 @@ void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
 void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len);
 
 ecsp_session_t ecsp_host_session(const ecsp_host_t *h, uint8_t board_addr);
+
+ecsp_txn_state_t ecsp_host_txn(const ecsp_host_t *h, uint8_t board_addr);
 
 size_t ecsp_host_tx_pending(const ecsp_host_t *h);
 

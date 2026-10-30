@@ -10,16 +10,24 @@
  * Not a config knob: the spec does not let a product change the retry count. */
 #define ECSP_HOST_ATTEMPTS 3u
 
-#if ECSP_RESP_HANDSHAKE_MS > 0x7FFFFFFFu || ECSP_RESP_QUERY_MS > 0x7FFFFFFFu
-#error "response deadlines must be below 2^31 ms to stay wrap-safe"
+/* Dropout is three heartbeat periods (spec 7.2.1). Scaling the heartbeat
+ * macro scales the threshold with it. */
+#define ECSP_DROPOUT_MS (3u * ECSP_HEARTBEAT_MS)
+
+#if ECSP_RESP_HANDSHAKE_MS > 0x7FFFFFFFu || ECSP_RESP_QUERY_MS > 0x7FFFFFFFu \
+    || ECSP_RESP_ACTION_MS > 0x7FFFFFFFu || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
+    || ECSP_SESSION_SETUP_MS > 0x7FFFFFFFu || ECSP_DROPOUT_MS > 0x7FFFFFFFu
+#error "host deadlines must be below 2^31 ms to stay wrap-safe"
 #endif
 
-/* phase: private to the slot. */
+/* phase: private to the slot. PASSIVE is "未连接, waiting for a 0x01 report"
+ * after three handshake probes (spec 4.1.1). */
 enum {
     PHASE_SEND_HS = 0,
     PHASE_WAIT_HS,
     PHASE_SEND_VER,
     PHASE_WAIT_VER,
+    PHASE_PASSIVE,
     PHASE_DONE
 };
 
@@ -69,6 +77,34 @@ static const ecsp_host_slot_t *lookup_slot(const ecsp_host_t *h,
     return NULL;
 }
 
+static void note_rx(ecsp_host_slot_t *slot, uint32_t now_ms)
+{
+    slot->last_rx_ms = now_ms;
+    slot->last_rx_valid = 1u;
+}
+
+/* Copy the callback out before clearing the slot: the callback may submit
+ * the next transaction, and must not see the one that just finished. */
+static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
+                       uint8_t response_code, const uint8_t *payload,
+                       uint16_t len)
+{
+    ecsp_txn_cb_t cb = slot->txn_cb;
+    void *user = slot->txn_user;
+    uint8_t cmd = slot->txn_cmd;
+    uint8_t board = slot->board_addr;
+
+    slot->txn_state = (uint8_t)ECSP_TXN_IDLE;
+    slot->txn_cb = NULL;
+    slot->txn_user = NULL;
+    slot->txn_attempt = 0u;
+    slot->txn_len = 0u;
+    slot->txn_defer = 0u;
+    if (cb != NULL) {
+        cb(h, board, cmd, status, response_code, payload, len, user);
+    }
+}
+
 int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
 {
     size_t i;
@@ -115,9 +151,19 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
         slot->phase = (uint8_t)PHASE_SEND_HS;
         slot->attempt = 0u;
         slot->sent_ms = 0u;
-        slot->user_pending = 0u;
-        slot->user_cmd = 0u;
-        slot->user_len = 0u;
+        slot->txn_state = (uint8_t)ECSP_TXN_IDLE;
+        slot->txn_cmd = 0u;
+        slot->txn_attempt = 0u;
+        slot->txn_defer = 0u;
+        slot->txn_len = 0u;
+        slot->txn_sent_ms = 0u;
+        slot->txn_cb = NULL;
+        slot->txn_user = NULL;
+        slot->last_rx_ms = 0u;
+        slot->last_rx_valid = 0u;
+        slot->bringup_ms = 0u;
+        slot->bringup_valid = 0u;
+        slot->bringup_open = 1u;
     }
     return ECSP_OK;
 }
@@ -128,8 +174,6 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
 {
     ecsp_host_slot_t *slot;
 
-    (void)cb;
-    (void)user;
     if (h == NULL || (len > 0u && payload == NULL)) {
         return ECSP_E_ARG;
     }
@@ -146,31 +190,59 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
     if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
         return ECSP_E_STATE;
     }
-    if (slot->user_pending != 0u) {
+    if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
         return ECSP_E_CAP;
     }
-    slot->user_cmd = cmd;
-    slot->user_len = len;
+    slot->txn_cmd = cmd;
+    slot->txn_len = len;
     if (len > 0u) {
-        memcpy(slot->user_payload, payload, len);
+        memcpy(slot->txn_payload, payload, len);
     }
-    slot->user_pending = 1u;
+    slot->txn_cb = cb;
+    slot->txn_user = user;
+    slot->txn_attempt = 0u;
+    /* A submit from inside step only enqueues. The next step sends it
+     * (ADR-0005). */
+    slot->txn_defer = (h->in_step != 0u) ? 1u : 0u;
+    slot->txn_state = (uint8_t)ECSP_TXN_QUEUED;
     return ECSP_OK;
 }
 
 static void stop_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
-                         ecsp_host_event_t event)
+                         ecsp_host_event_t event, uint8_t phase)
 {
     slot->session = (uint8_t)ECSP_SESS_DISCONNECTED;
-    slot->phase = (uint8_t)PHASE_DONE;
+    slot->phase = phase;
     slot->attempt = 0u;
     report_event(h, slot, event);
 }
 
-/* One outstanding request: on its deadline, resend or give up. The attempt
- * counter advances only once the frame is in the transmit FIFO. A frame that
- * does not fit is a link fault (spec 6.2), not another silent probe. */
-static void progress_slot(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+static uint32_t response_limit(uint8_t cmd)
+{
+    if (cmd == (uint8_t)ECSP_CMD_HANDSHAKE) {
+        return ECSP_RESP_HANDSHAKE_MS;
+    }
+    if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
+        return ECSP_RESP_UPGRADE_MS;
+    }
+    /* Getters (spec 7.1). Everything else shares the 100 ms ceiling. */
+    if (cmd == (uint8_t)ECSP_CMD_GET_VERSION ||
+        cmd == (uint8_t)ECSP_CMD_GET_HW_VERSION ||
+        cmd == (uint8_t)ECSP_CMD_GET_SERIAL ||
+        cmd == (uint8_t)ECSP_CMD_GET_SELFTEST ||
+        cmd == (uint8_t)ECSP_CMD_GET_UPGRADE ||
+        cmd == (uint8_t)ECSP_CMD_GET_FAULT) {
+        return ECSP_RESP_QUERY_MS;
+    }
+    return ECSP_RESP_ACTION_MS;
+}
+
+/* One outstanding bring-up request: on its deadline, resend or give up.
+ * The attempt counter advances only once the frame is in the transmit FIFO.
+ * Three silent handshake probes enter passive wait (spec 4.1.1); they do
+ * not go offline until the session-establishment window runs out. */
+static void progress_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
+                             uint32_t now_ms)
 {
     int waiting_hs = (slot->phase == (uint8_t)PHASE_WAIT_HS) ? 1 : 0;
     int waiting_ver = (slot->phase == (uint8_t)PHASE_WAIT_VER) ? 1 : 0;
@@ -183,7 +255,10 @@ static void progress_slot(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_m
             return;
         }
         if (slot->attempt >= ECSP_HOST_ATTEMPTS) {
-            stop_bringup(h, slot, ECSP_HOST_EV_PROBE_FAILED);
+            uint8_t phase = waiting_hs ? (uint8_t)PHASE_PASSIVE
+                                       : (uint8_t)PHASE_DONE;
+
+            stop_bringup(h, slot, ECSP_HOST_EV_PROBE_FAILED, phase);
             return;
         }
         slot->phase = waiting_hs ? (uint8_t)PHASE_SEND_HS
@@ -199,7 +274,7 @@ static void progress_slot(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_m
     }
 
     if (!queue_frame(h, slot->board_addr, cmd, NULL, 0u)) {
-        stop_bringup(h, slot, ECSP_HOST_EV_LINK_FAULT);
+        stop_bringup(h, slot, ECSP_HOST_EV_LINK_FAULT, (uint8_t)PHASE_DONE);
         return;
     }
     slot->attempt++;
@@ -213,9 +288,111 @@ static void progress_slot(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_m
     }
 }
 
+static void fail_txn_link(ecsp_host_t *h, ecsp_host_slot_t *slot)
+{
+    finish_txn(h, slot, ECSP_E_LINK, 0u, NULL, 0u);
+    report_event(h, slot, ECSP_HOST_EV_LINK_FAULT);
+}
+
+/* Table 4-2: a queued request is sent; a waiting one is retried up to three
+ * times with the original payload (so the transaction sequence is unchanged).
+ * Exhausting the attempts drops the session, then the transaction goes idle. */
+static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+{
+    const uint8_t *payload;
+
+    if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
+        return;
+    }
+    if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP) {
+        if (!deadline_reached(slot->txn_sent_ms, now_ms,
+                              response_limit(slot->txn_cmd))) {
+            return;
+        }
+        if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {
+            slot->session = (uint8_t)ECSP_SESS_OFFLINE;
+            slot->phase = (uint8_t)PHASE_DONE;
+            finish_txn(h, slot, ECSP_E_TIMEOUT, 0u, NULL, 0u);
+            report_event(h, slot, ECSP_HOST_EV_OFFLINE);
+            return;
+        }
+    } else if (slot->txn_state != (uint8_t)ECSP_TXN_QUEUED ||
+               slot->txn_defer != 0u) {
+        return;
+    }
+
+    payload = (slot->txn_len > 0u) ? slot->txn_payload : NULL;
+    if (!queue_frame(h, slot->board_addr, slot->txn_cmd, payload, slot->txn_len)) {
+        fail_txn_link(h, slot);
+        return;
+    }
+    slot->txn_attempt++;
+    slot->txn_sent_ms = now_ms;
+    slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESP;
+}
+
+/* spec 7.2.1: three heartbeat periods with no valid frame from this slave. */
+static int drop_if_silent(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+{
+    if (slot->session != (uint8_t)ECSP_SESS_NORMAL || slot->last_rx_valid == 0u) {
+        return 0;
+    }
+    if (!deadline_reached(slot->last_rx_ms, now_ms, ECSP_DROPOUT_MS)) {
+        return 0;
+    }
+    slot->session = (uint8_t)ECSP_SESS_OFFLINE;
+    slot->phase = (uint8_t)PHASE_DONE;
+    if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
+        finish_txn(h, slot, ECSP_E_OFFLINE, 0u, NULL, 0u);
+    }
+    report_event(h, slot, ECSP_HOST_EV_OFFLINE);
+    return 1;
+}
+
+/* spec 4.1.1: passive wait may not outlast the session-establishment window.
+ * The window closes once the slave has reached normal communication or
+ * version-mismatch, and once this timeout has already fired. */
+static int setup_expired(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+{
+    if (slot->bringup_open == 0u) {
+        return 0;
+    }
+    if (slot->bringup_valid == 0u) {
+        slot->bringup_ms = now_ms;
+        slot->bringup_valid = 1u;
+        return 0;
+    }
+    if (slot->session == (uint8_t)ECSP_SESS_NORMAL ||
+        slot->session == (uint8_t)ECSP_SESS_VERSION_MISMATCH ||
+        slot->session == (uint8_t)ECSP_SESS_OFFLINE) {
+        slot->bringup_open = 0u;
+        return 0;
+    }
+    if (!deadline_reached(slot->bringup_ms, now_ms, ECSP_SESSION_SETUP_MS)) {
+        return 0;
+    }
+    slot->bringup_open = 0u;
+    slot->session = (uint8_t)ECSP_SESS_OFFLINE;
+    slot->phase = (uint8_t)PHASE_DONE;
+    slot->attempt = 0u;
+    if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
+        finish_txn(h, slot, ECSP_E_OFFLINE, 0u, NULL, 0u);
+    }
+    report_event(h, slot, ECSP_HOST_EV_OFFLINE);
+    return 1;
+}
+
+static void arm_probe(ecsp_host_slot_t *slot)
+{
+    slot->session = (uint8_t)ECSP_SESS_DISCONNECTED;
+    slot->phase = (uint8_t)PHASE_SEND_HS;
+    slot->attempt = 0u;
+}
+
 /* A handshake report has an empty payload. Only a 0x00 response (spec 5.2.1)
  * completes the probe and arms the version read (spec 4.1.1). */
-static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame)
+static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
+                         uint32_t now_ms)
 {
     ecsp_host_slot_t *slot;
 
@@ -226,12 +403,21 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame)
     if (slot == NULL) {
         return;
     }
+    note_rx(slot, now_ms);
+
+    if (frame->cmd == (uint8_t)ECSP_CMD_HANDSHAKE && frame->payload_len == 0u) {
+        /* spec 4.1.1: a report during passive wait or after dropout starts
+         * a fresh probe. It is not itself an answer, and the host does not
+         * reply to it. */
+        if (slot->phase == (uint8_t)PHASE_PASSIVE ||
+            slot->session == (uint8_t)ECSP_SESS_OFFLINE) {
+            arm_probe(slot);
+        }
+        return;
+    }
+
     if (slot->phase == (uint8_t)PHASE_WAIT_HS &&
         frame->cmd == (uint8_t)ECSP_CMD_HANDSHAKE) {
-        /* An empty payload is a handshake report, not an answer. */
-        if (frame->payload_len == 0u) {
-            return;
-        }
         if (frame->payload_len == 1u &&
             frame->payload[0] == (uint8_t)ECSP_RS_OK) {
             slot->session = (uint8_t)ECSP_SESS_HANDSHAKEN;
@@ -239,18 +425,17 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame)
             slot->attempt = 0u;
             return;
         }
-        /* spec table 6-1: 0x01/0x02/... are defects. Do not retry them as
-         * if the peer had said nothing. */
-        stop_bringup(h, slot, ECSP_HOST_EV_REJECTED);
+        if (frame->payload_len >= 1u) {
+            /* spec table 6-1: 0x01/0x02/... are defects. Do not retry them
+             * as if the peer had said nothing. */
+            stop_bringup(h, slot, ECSP_HOST_EV_REJECTED, (uint8_t)PHASE_DONE);
+        }
         return;
     }
 
     /* spec 9.2: the 7 version bytes are compared as raw bytes. */
     if (slot->phase == (uint8_t)PHASE_WAIT_VER &&
         frame->cmd == (uint8_t)ECSP_CMD_GET_VERSION) {
-        if (frame->payload_len == 0u) {
-            return;
-        }
         if (frame->payload_len == (uint16_t)(1u + ECSP_VERSION_LEN) &&
             frame->payload[0] == (uint8_t)ECSP_RS_OK) {
             ecsp_version_t got;
@@ -258,6 +443,7 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame)
             memcpy(got.b, &frame->payload[1], ECSP_VERSION_LEN);
             slot->phase = (uint8_t)PHASE_DONE;
             slot->attempt = 0u;
+            slot->bringup_open = 0u;
             if (ecsp_version_equals(&got, &slot->expect_version)) {
                 slot->session = (uint8_t)ECSP_SESS_NORMAL;
             } else {
@@ -266,13 +452,25 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame)
             }
             return;
         }
-        stop_bringup(h, slot, ECSP_HOST_EV_REJECTED);
+        if (frame->payload_len >= 1u) {
+            stop_bringup(h, slot, ECSP_HOST_EV_REJECTED, (uint8_t)PHASE_DONE);
+        }
+        return;
+    }
+
+    if (slot->session == (uint8_t)ECSP_SESS_NORMAL &&
+        slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP &&
+        frame->cmd == slot->txn_cmd &&
+        frame->payload_len >= 1u) {
+        finish_txn(h, slot, ECSP_OK, frame->payload[0],
+                   &frame->payload[1],
+                   (uint16_t)(frame->payload_len - 1u));
     }
 }
 
 static void shift_front(uint8_t *buf, size_t *len, size_t n);
 
-static void pump_rx(ecsp_host_t *h)
+static void pump_rx(ecsp_host_t *h, uint32_t now_ms)
 {
     for (;;) {
         ecsp_frame_t frame;
@@ -288,7 +486,7 @@ static void pump_rx(ecsp_host_t *h)
             shift_front(h->cfg.rx_buf, &h->rx_len, consumed);
             continue;
         }
-        accept_frame(h, &frame);
+        accept_frame(h, &frame, now_ms);
         shift_front(h->cfg.rx_buf, &h->rx_len, consumed);
     }
 }
@@ -301,21 +499,18 @@ void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
         return;
     }
     h->in_step = 1u;
-    pump_rx(h);
+    pump_rx(h, now_ms);
     for (i = 0u; i < h->slave_count; i++) {
         ecsp_host_slot_t *slot = &h->slots[i];
-        const uint8_t *payload;
 
-        progress_slot(h, slot, now_ms);
-        if (slot->user_pending == 0u ||
-            slot->session != (uint8_t)ECSP_SESS_NORMAL) {
+        if (setup_expired(h, slot, now_ms) || drop_if_silent(h, slot, now_ms)) {
             continue;
         }
-        payload = (slot->user_len > 0u) ? slot->user_payload : NULL;
-        if (queue_frame(h, slot->board_addr, slot->user_cmd,
-                        payload, slot->user_len)) {
-            slot->user_pending = 0u;
-        }
+        progress_bringup(h, slot, now_ms);
+        progress_txn(h, slot, now_ms);
+    }
+    for (i = 0u; i < h->slave_count; i++) {
+        h->slots[i].txn_defer = 0u;
     }
     h->in_step = 0u;
 }
@@ -348,6 +543,20 @@ ecsp_session_t ecsp_host_session(const ecsp_host_t *h, uint8_t board_addr)
         return ECSP_SESS_DISCONNECTED;
     }
     return (ecsp_session_t)slot->session;
+}
+
+ecsp_txn_state_t ecsp_host_txn(const ecsp_host_t *h, uint8_t board_addr)
+{
+    const ecsp_host_slot_t *slot;
+
+    if (h == NULL) {
+        return ECSP_TXN_IDLE;
+    }
+    slot = lookup_slot(h, board_addr);
+    if (slot == NULL) {
+        return ECSP_TXN_IDLE;
+    }
+    return (ecsp_txn_state_t)slot->txn_state;
 }
 
 size_t ecsp_host_tx_pending(const ecsp_host_t *h)

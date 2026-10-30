@@ -53,6 +53,22 @@
 #define ECSP_RESP_QUERY_MS 50u
 #endif
 
+/* Set-class and action-class first answers (spec 7.1). Online upgrade's
+ * first answer is the longer ceiling in the same table. */
+#ifndef ECSP_RESP_ACTION_MS
+#define ECSP_RESP_ACTION_MS 100u
+#endif
+
+#ifndef ECSP_RESP_UPGRADE_MS
+#define ECSP_RESP_UPGRADE_MS 500u
+#endif
+
+/* Power-up until business commands may be sent (spec 4.1.1, table 7-2).
+ * A product may only loosen this. */
+#ifndef ECSP_SESSION_SETUP_MS
+#define ECSP_SESSION_SETUP_MS 5000u
+#endif
+
 /* Long-running accept field T_exec_max, milliseconds, uint16 little-endian
  * (spec 4.3, 5.2.8, 5.2.12). These are the recommended ceilings; a product
  * overrides them and declares the value in its product spec. Reaching the
@@ -81,9 +97,14 @@ enum {
     ECSP_E_LEN  = -2,  /* payload length does not match the command (-> 0x02) */
     ECSP_E_VAL  = -3,  /* payload length is right but the value is illegal (-> 0x03) */
     ECSP_E_CAP   = -4, /* a destination buffer is too small for the data */
-    ECSP_E_STATE = -5  /* session is not in normal communication, so a
-                        * business command is refused locally and no frame
-                        * is queued (spec 4.1.1, 9.2) */
+    ECSP_E_STATE   = -5, /* session is not in normal communication, so a
+                          * business command is refused locally and no frame
+                          * is queued (spec 4.1.1, 9.2) */
+    ECSP_E_TIMEOUT = -6, /* the allowed attempts got no answer (spec 6.2) */
+    ECSP_E_OFFLINE = -7, /* the session dropped out; an in-flight transaction
+                          * was cancelled (spec 7.2.1) */
+    ECSP_E_LINK    = -8  /* the frame would not fit in the transmit FIFO
+                          * (spec 6.2); the peer was not judged silent */
 };
 
 #endif /* ECSP_CONFIG_H */

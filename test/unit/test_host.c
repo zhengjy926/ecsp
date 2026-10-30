@@ -22,6 +22,9 @@
 
 #define HANDSHAKE_MS 100u
 #define QUERY_MS     50u
+#define ACTION_MS    100u
+#define DROPOUT_MS   3000u
+#define SETUP_MS     5000u
 
 /* spec 5.2.1 host handshake request, P=0x03 B=0x02. The report frame is the
  * same bytes; only a response carrying 0x00 is an answer. */
@@ -71,11 +74,59 @@ static uint8_t g_tx_one_frame[ECSP_FRAME_MIN_LEN];
 static uint8_t *g_tx_use;
 static size_t g_tx_cap;
 static ecsp_host_t g_host;
-static ecsp_host_slave_cfg_t g_slaves[1];
+static ecsp_host_slave_cfg_t g_slaves[2];
 
 static int g_events;
 static int g_event;
 static uint8_t g_event_board;
+
+static int g_txn_calls;
+static int g_txn_status;
+static uint8_t g_txn_cmd;
+static int g_txn_user_got;
+static int g_txn_marker;
+
+/* spec 5.2.7 reset request, transaction sequence 0x01. Retries must be
+ * these same bytes (spec 4.2: a retransmission reuses the sequence). */
+static const uint8_t reset_req[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x07, 0x02, 0x01, 0x71, 0x94, 0x0D
+};
+static const uint8_t reset_seq[] = { 0x01u };
+
+/* spec 5.2.16 heartbeat, used as a valid frame that is not a command answer. */
+static const uint8_t heartbeat[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x10, 0x02, 0x84, 0x00, 0x0D
+};
+
+/* Second slave, P=0x03 B=0x03. CRC16-MODBUS over the length..payload bytes. */
+static const uint8_t hs_req_b3[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x01, 0x03, 0x49, 0x90, 0x0D
+};
+static const uint8_t hs_resp_b3[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x01, 0x03, 0x00, 0x51, 0xC5, 0x0D
+};
+static const uint8_t ver_req_b3[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x02, 0x03, 0x49, 0x60, 0x0D
+};
+static const uint8_t ver_resp_b3[] = {
+    0xFA, 0x11, 0x00, 0x03, 0x02, 0x03, 0x00,
+    0x31, 0x2E, 0x30, 0x2E, 0x30, 0x2E, 0x30, 0xF7, 0x9E, 0x0D
+};
+
+static void on_txn(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
+                   int status, uint8_t response_code, const uint8_t *payload,
+                   uint16_t len, void *user)
+{
+    (void)h;
+    (void)board_addr;
+    (void)response_code;
+    (void)payload;
+    (void)len;
+    g_txn_calls++;
+    g_txn_status = status;
+    g_txn_cmd = cmd;
+    g_txn_user_got = (user == &g_txn_marker) ? 1 : 0;
+}
 
 static void on_event(ecsp_host_t *h, uint8_t board_addr, ecsp_host_event_t event,
                      void *user)
@@ -365,6 +416,255 @@ static void test_full_fifo_reports_link_fault(void)
     CHECK_EQ((int)ECSP_HOST_EV_LINK_FAULT, g_event);
 }
 
+static void reach_normal(void)
+{
+    reach_version_wait();
+    ecsp_host_rx(&g_host, version_ok, sizeof version_ok);
+    step_at(20u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* spec table 4-2 / 4.2: while the reset is in flight the session stays
+ * "normal communication". Three identical transmissions (same sequence
+ * byte), then the session drops and the callback runs once. */
+static void test_inflight_txn_keeps_session_and_retries_same_sequence(void)
+{
+    g_txn_calls = 0;
+    g_txn_user_got = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, on_txn, &g_txn_marker));
+    CHECK_EQ(ECSP_TXN_QUEUED, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u);
+    expect_bytes(reset_req, sizeof reset_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(20u + ACTION_MS);
+    expect_bytes(reset_req, sizeof reset_req);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + 2u * ACTION_MS);
+    expect_bytes(reset_req, sizeof reset_req);
+
+    step_at(20u + 3u * ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_E_TIMEOUT, g_txn_status);
+    CHECK_EQ(ECSP_CMD_SYSTEM_RESET, g_txn_cmd);
+    CHECK_EQ(1, g_txn_user_got);
+
+    step_at(20u + 4u * ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_E_STATE,
+             ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                              NULL, 0u, NULL, NULL));
+}
+
+/* spec 7.2.1: three heartbeat periods with no valid frame drop the session.
+ * An in-flight transaction is cancelled once, not also retried. */
+static void test_heartbeat_silence_drops_session_and_cancels_txn_once(void)
+{
+    g_txn_calls = 0;
+    g_events = 0;
+    reach_normal();
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, on_txn, &g_txn_marker));
+    step_at(20u);
+    drain_all();
+
+    step_at(20u + DROPOUT_MS - 1u);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    /* That step is also past the answer deadline, so it may have queued one
+     * retransmission. Dropout is about silence, not about that retry. */
+    drain_all();
+
+    step_at(20u + DROPOUT_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_E_OFFLINE, g_txn_status);
+    CHECK_EQ(1, g_events);
+    CHECK_EQ((int)ECSP_HOST_EV_OFFLINE, g_event);
+
+    step_at(20u + DROPOUT_MS + DROPOUT_MS);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(1, g_events);
+}
+
+/* spec 4.1 / 7.2.1: after dropout a business command is refused until a
+ * handshake report is accepted and the version matches again. */
+static void test_dropout_recovery_requires_a_new_handshake(void)
+{
+    reach_normal();
+    step_at(20u + DROPOUT_MS);
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_E_STATE,
+             ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                              NULL, 0u, NULL, NULL));
+    expect_nothing();
+
+    ecsp_host_rx(&g_host, handshake_req, sizeof handshake_req);
+    step_at(20u + DROPOUT_MS);
+    expect_bytes(handshake_req, sizeof handshake_req);
+    CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, handshake_resp, sizeof handshake_resp);
+    step_at(20u + DROPOUT_MS + 10u);
+    expect_bytes(version_req, sizeof version_req);
+    ecsp_host_rx(&g_host, version_ok, sizeof version_ok);
+    step_at(20u + DROPOUT_MS + 20u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, NULL, NULL));
+    step_at(20u + DROPOUT_MS + 20u);
+    expect_bytes(fault_query_req, sizeof fault_query_req);
+}
+
+/* spec 4.1.1: three probes with no answer enter passive wait. A later
+ * handshake report, still inside the 5 s window, is probed again and can
+ * reach normal communication. */
+static void test_late_slave_report_restarts_the_probe(void)
+{
+    g_events = 0;
+    init_host(on_event, NULL);
+    step_at(0u);
+    drain_all();
+    step_at(HANDSHAKE_MS);
+    drain_all();
+    step_at(2u * HANDSHAKE_MS);
+    drain_all();
+    step_at(3u * HANDSHAKE_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_DISCONNECTED, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(1, g_events);
+    CHECK_EQ((int)ECSP_HOST_EV_PROBE_FAILED, g_event);
+
+    step_at(1000u);
+    expect_nothing();
+
+    ecsp_host_rx(&g_host, handshake_req, sizeof handshake_req);
+    step_at(1000u);
+    expect_bytes(handshake_req, sizeof handshake_req);
+    CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, handshake_resp, sizeof handshake_resp);
+    step_at(1010u);
+    expect_bytes(version_req, sizeof version_req);
+    ecsp_host_rx(&g_host, version_ok, sizeof version_ok);
+    step_at(1020u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* spec 4.1.1: passive wait that outlasts the session-establishment window
+ * is dropout, and it is reported. */
+static void test_passive_wait_past_setup_window_goes_offline(void)
+{
+    g_events = 0;
+    init_host(on_event, NULL);
+    step_at(0u);
+    drain_all();
+    step_at(HANDSHAKE_MS);
+    drain_all();
+    step_at(2u * HANDSHAKE_MS);
+    drain_all();
+    step_at(3u * HANDSHAKE_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_DISCONNECTED, ecsp_host_session(&g_host, 0x02u));
+
+    g_events = 0;
+    step_at(SETUP_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(1, g_events);
+    CHECK_EQ((int)ECSP_HOST_EV_OFFLINE, g_event);
+    CHECK_EQ(ECSP_E_STATE,
+             ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                              NULL, 0u, NULL, NULL));
+}
+
+static void init_two(void)
+{
+    ecsp_host_cfg_t cfg;
+    static const uint8_t expect[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    memcpy(g_slaves[0].expect_version.b, expect, 7u);
+    memcpy(g_slaves[1].expect_version.b, expect, 7u);
+    g_slaves[0].board_addr = 0x02u;
+    g_slaves[1].board_addr = 0x03u;
+
+    cfg.product_addr = 0x03u;
+    cfg.slaves = g_slaves;
+    cfg.slave_count = 2u;
+    cfg.rx_buf = g_rx;
+    cfg.rx_cap = sizeof g_rx;
+    cfg.tx_buf = g_tx;
+    cfg.tx_cap = sizeof g_tx;
+    cfg.on_event = on_event;
+    cfg.user = NULL;
+    CHECK_EQ(0, ecsp_host_init(&g_host, &cfg));
+}
+
+/* spec 4.1, "各板卡地址的两条状态轴相互独立": one slave dropping does not
+ * stop the other from accepting a business command. */
+static void test_one_slave_dropping_leaves_the_other_usable(void)
+{
+    uint8_t both_hs[sizeof handshake_req + sizeof hs_req_b3];
+    uint8_t both_ver[sizeof version_req + sizeof ver_req_b3];
+
+    g_events = 0;
+    init_two();
+    memcpy(both_hs, handshake_req, sizeof handshake_req);
+    memcpy(both_hs + sizeof handshake_req, hs_req_b3, sizeof hs_req_b3);
+    memcpy(both_ver, version_req, sizeof version_req);
+    memcpy(both_ver + sizeof version_req, ver_req_b3, sizeof ver_req_b3);
+
+    step_at(0u);
+    expect_bytes(both_hs, sizeof both_hs);
+    ecsp_host_rx(&g_host, handshake_resp, sizeof handshake_resp);
+    ecsp_host_rx(&g_host, hs_resp_b3, sizeof hs_resp_b3);
+    step_at(10u);
+    expect_bytes(both_ver, sizeof both_ver);
+    ecsp_host_rx(&g_host, version_ok, sizeof version_ok);
+    ecsp_host_rx(&g_host, ver_resp_b3, sizeof ver_resp_b3);
+    step_at(20u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x03u));
+
+    ecsp_host_rx(&g_host, heartbeat, sizeof heartbeat);
+    step_at(20u + DROPOUT_MS - 100u);
+    step_at(20u + DROPOUT_MS);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x03u));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x03u));
+
+    CHECK_EQ(ECSP_E_STATE,
+             ecsp_host_submit(&g_host, 0x03u, ECSP_CMD_GET_FAULT,
+                              NULL, 0u, NULL, NULL));
+    expect_nothing();
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, NULL, NULL));
+    step_at(20u + DROPOUT_MS);
+    expect_bytes(fault_query_req, sizeof fault_query_req);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
 int main(void)
 {
     test_first_step_sends_handshake_request();
@@ -377,5 +677,11 @@ int main(void)
     test_rejected_handshake_is_not_retried_as_silence();
     test_rejected_version_is_not_retried_as_silence();
     test_full_fifo_reports_link_fault();
+    test_inflight_txn_keeps_session_and_retries_same_sequence();
+    test_heartbeat_silence_drops_session_and_cancels_txn_once();
+    test_dropout_recovery_requires_a_new_handshake();
+    test_late_slave_report_restarts_the_probe();
+    test_passive_wait_past_setup_window_goes_offline();
+    test_one_slave_dropping_leaves_the_other_usable();
     return ecsp_test_report();
 }
