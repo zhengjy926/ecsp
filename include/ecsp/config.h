@@ -105,8 +105,13 @@ enum {
                           * was cancelled (spec 7.2.1) */
     ECSP_E_LINK    = -8, /* the frame would not fit in the transmit FIFO
                           * (spec 6.2); the peer was not judged silent */
-    ECSP_E_REENT   = -9  /* ecsp_host_step called again from its own stack
+    ECSP_E_REENT   = -9, /* ecsp_host_step called again from its own stack
                           * (ADR-0005); the call changes nothing */
+    ECSP_E_RESET   = -10 /* the in-flight transaction was cancelled because
+                          * the slave is resetting (spec 4.4, 4.1.4). Not a
+                          * success and not a failure of that command: the
+                          * result event will not arrive, and the outcome is
+                          * whatever a later query says */
 };
 
 #endif /* ECSP_CONFIG_H */

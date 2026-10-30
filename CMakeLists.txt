@@ -87,6 +87,16 @@ add_test(NAME session COMMAND test_session)
 add_test(NAME long_run COMMAND test_long_run)
 add_test(NAME host COMMAND test_host)
 
+add_executable(test_two_instance test/integ/two_instance.c)
+target_link_libraries(test_two_instance PRIVATE ecsp_core)
+target_include_directories(test_two_instance PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/unit
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/vectors
+)
+ecsp_enable_warnings(test_two_instance)
+
+add_test(NAME two_instance COMMAND test_two_instance)
+
 # Vector/spec cross-check (PowerShell); runs under ctest as well.
 find_program(POWERSHELL_EXECUTABLE powershell)
 if(POWERSHELL_EXECUTABLE)

@@ -60,7 +60,10 @@ ECSP_VECTOR(sn_get_resp, "FA 16 00 03 06 02 00 53 4E 30 30 30 30 30 30 30 30 30 
 ECSP_VECTOR(reset_req,  "FA 0A 00 03 07 02 01 71 94 0D", "spec 5.2.7")
 ECSP_VECTOR(reset_resp, "FA 0A 00 03 07 02 00 B0 54 0D", "spec 5.2.7")
 
-/* 5.2.10 self-test result report (response code 0x00 = success). */
+/* 5.2.9 get self-test result request (empty payload). */
+ECSP_VECTOR(selftest_query_req, "FA 09 00 03 09 02 8F 90 0D", "spec 5.2.9")
+
+/* 5.2.10 self-test result report (result 0x00 = success). No response code. */
 ECSP_VECTOR(selftest_report, "FA 0A 00 03 0A 02 00 21 97 0D", "spec 5.2.10")
 
 /* 5.2.11 set low-power mode (mode 0x01 = enter) request / response. */

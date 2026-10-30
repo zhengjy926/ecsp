@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#include "ecsp/bytes.h"
 #include "ecsp/frame.h"
 
 #if ECSP_HOST_SLAVES > 255
@@ -123,6 +124,10 @@ static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
     slot->txn_attempt = 0u;
     slot->txn_len = 0u;
     slot->txn_defer = 0u;
+    slot->txn_wire_cmd = 0u;
+    slot->txn_fallback = 0u;
+    slot->txn_exec_max = 0u;
+    slot->txn_result_ms = 0u;
     if (cb != NULL) {
         cb(h, board, cmd, status, response_code, payload, len, user);
     }
@@ -179,10 +184,18 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
         slot->txn_cmd = 0u;
         slot->txn_attempt = 0u;
         slot->txn_defer = 0u;
+        slot->txn_wire_cmd = 0u;
+        slot->txn_fallback = 0u;
+        slot->txn_abandon = 0u;
+        slot->abandon_cmd = 0u;
         slot->txn_len = 0u;
+        slot->txn_exec_max = 0u;
         slot->txn_sent_ms = 0u;
+        slot->txn_result_ms = 0u;
         slot->txn_cb = NULL;
         slot->txn_user = NULL;
+        slot->abandon_cb = NULL;
+        slot->abandon_user = NULL;
         slot->last_rx_ms = 0u;
         slot->last_rx_valid = 0u;
         slot->bringup_ms = 0u;
@@ -214,10 +227,21 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
     if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
         return ECSP_E_STATE;
     }
-    if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
+    /* spec 4.4: 0x07 during wait-result preempts that command. The reset is
+     * only queued here. The next step reports ECSP_E_RESET for the command
+     * that was waiting (outcome not assumed) and then transmits the reset.
+     * The callback stays on the step stack (ADR-0005). */
+    if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESULT &&
+        cmd == (uint8_t)ECSP_CMD_SYSTEM_RESET) {
+        slot->txn_abandon = 1u;
+        slot->abandon_cmd = slot->txn_cmd;
+        slot->abandon_cb = slot->txn_cb;
+        slot->abandon_user = slot->txn_user;
+    } else if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
         return ECSP_E_CAP;
     }
     slot->txn_cmd = cmd;
+    slot->txn_wire_cmd = cmd;
     slot->txn_len = len;
     if (len > 0u) {
         memcpy(slot->txn_payload, payload, len);
@@ -328,7 +352,8 @@ static int transmit_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
     const uint8_t *payload;
 
     payload = (slot->txn_len > 0u) ? slot->txn_payload : NULL;
-    if (!queue_frame(h, slot->board_addr, slot->txn_cmd, payload, slot->txn_len)) {
+    if (!queue_frame(h, slot->board_addr, slot->txn_wire_cmd, payload,
+                     slot->txn_len)) {
         fail_txn_link(h, slot);
         return 0;
     }
@@ -351,7 +376,7 @@ static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms
         return;
     }
     if (!deadline_reached(slot->txn_sent_ms, now_ms,
-                          response_limit(slot->txn_cmd))) {
+                          response_limit(slot->txn_wire_cmd))) {
         return;
     }
     if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {
@@ -449,6 +474,94 @@ static void arm_probe(ecsp_host_slot_t *slot)
     slot->attempt = 0u;
 }
 
+/* 0x08 and 0x0C share one shape (spec 4.3, 5.2.8, 5.2.12): an accept carries
+ * T_exec_max, the result is a one-byte event, and a lost event is recovered
+ * by the paired get-result query. */
+static int long_run_pair(uint8_t cmd, uint8_t *event_cmd, uint8_t *query_cmd)
+{
+    if (cmd == (uint8_t)ECSP_CMD_CONTROL_SELFTEST) {
+        *event_cmd = (uint8_t)ECSP_CMD_SELFTEST_REPORT;
+        *query_cmd = (uint8_t)ECSP_CMD_GET_SELFTEST;
+        return 1;
+    }
+    if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
+        *event_cmd = (uint8_t)ECSP_CMD_UPGRADE_REPORT;
+        *query_cmd = (uint8_t)ECSP_CMD_GET_UPGRADE;
+        return 1;
+    }
+    return 0;
+}
+
+static int awaiting_result(const ecsp_host_slot_t *slot)
+{
+    if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESULT) {
+        return 1;
+    }
+    if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP &&
+        slot->txn_fallback != 0u) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Result event and get-result success look the same to the caller: response
+ * code 0x00, one result byte (spec 4.3). `result` is copied out before the
+ * callback, so the caller's pointer is not the slot. */
+static void finish_long_result(ecsp_host_t *h, ecsp_host_slot_t *slot,
+                               uint8_t result)
+{
+    uint8_t byte = result;
+
+    finish_txn(h, slot, ECSP_OK, (uint8_t)ECSP_RS_OK, &byte, 1u);
+}
+
+/* spec 4.1.1 passive wait, spec 7.2.1 dropout, and spec 4.1.4 / 4.4 once the
+ * session has existed: an empty 0x01 means "probe again", not "stay here". */
+static int report_restarts_session(const ecsp_host_slot_t *slot)
+{
+    if (slot->phase == (uint8_t)PHASE_PASSIVE) {
+        return 1;
+    }
+    if (slot->session == (uint8_t)ECSP_SESS_OFFLINE ||
+        slot->session == (uint8_t)ECSP_SESS_HANDSHAKEN ||
+        slot->session == (uint8_t)ECSP_SESS_NORMAL ||
+        slot->session == (uint8_t)ECSP_SESS_VERSION_MISMATCH) {
+        return 1;
+    }
+    return 0;
+}
+
+/* spec 4.3: T_exec_max with no result event means ask for the result. The
+ * query is not a new caller transaction; exhausting it fails this one. */
+static void progress_result(ecsp_host_t *h, ecsp_host_slot_t *slot,
+                            uint32_t now_ms)
+{
+    uint8_t event_cmd = 0u;
+    uint8_t query_cmd = 0u;
+
+    if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
+        return;
+    }
+    if (slot->txn_state != (uint8_t)ECSP_TXN_WAIT_RESULT) {
+        return;
+    }
+    if (!long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd)) {
+        return;
+    }
+    if (!deadline_reached(slot->txn_result_ms, now_ms, slot->txn_exec_max)) {
+        return;
+    }
+    (void)event_cmd;
+    slot->txn_wire_cmd = query_cmd;
+    slot->txn_len = 0u;
+    slot->txn_attempt = 0u;
+    slot->txn_fallback = 1u;
+    if (!transmit_txn(h, slot, now_ms)) {
+        return;
+    }
+    slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESP;
+}
+
 /* A handshake report has an empty payload. Only a 0x00 response (spec 5.2.1)
  * completes the probe and arms the version read (spec 4.1.1). */
 static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
@@ -466,12 +579,15 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
     note_rx(slot, now_ms);
 
     if (frame->cmd == (uint8_t)ECSP_CMD_HANDSHAKE && frame->payload_len == 0u) {
-        /* spec 4.1.1: a report during passive wait or after dropout starts
-         * a fresh probe. It is not itself an answer, and the host does not
-         * reply to it. */
-        if (slot->phase == (uint8_t)PHASE_PASSIVE ||
-            slot->session == (uint8_t)ECSP_SESS_OFFLINE) {
+        /* A report is not an answer, and the host does not reply to it.
+         * spec 4.1.4 / 4.4: once this slave has had a session, the report
+         * means it restarted. Drop the session first so the callback cannot
+         * submit a business command into a session that is about to die. */
+        if (report_restarts_session(slot)) {
             arm_probe(slot);
+            if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
+                finish_txn(h, slot, ECSP_E_RESET, 0u, NULL, 0u);
+            }
         }
         return;
     }
@@ -518,13 +634,80 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
         return;
     }
 
+    if (slot->session == (uint8_t)ECSP_SESS_NORMAL && awaiting_result(slot)) {
+        uint8_t event_cmd = 0u;
+        uint8_t query_cmd = 0u;
+
+        if (long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd) &&
+            frame->cmd == event_cmd &&
+            frame->payload_len == 1u) {
+            finish_long_result(h, slot, frame->payload[0]);
+            return;
+        }
+        (void)query_cmd;
+    }
+
     if (slot->session == (uint8_t)ECSP_SESS_NORMAL &&
         slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP &&
-        frame->cmd == slot->txn_cmd &&
+        frame->cmd == slot->txn_wire_cmd &&
         frame->payload_len >= 1u) {
+        uint8_t event_cmd = 0u;
+        uint8_t query_cmd = 0u;
+        int paired = long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd);
+
+        /* spec 4.3: 0x00 plus T_exec_max accepts the command and waits.
+         * Any other answer is the end — there will be no result event. */
+        if (paired && slot->txn_fallback == 0u &&
+            frame->payload[0] == (uint8_t)ECSP_RS_OK &&
+            frame->payload_len == 3u) {
+            slot->txn_exec_max = ecsp_rd_u16le(&frame->payload[1]);
+            slot->txn_result_ms = now_ms;
+            slot->txn_fallback = 0u;
+            slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESULT;
+            return;
+        }
+        if (slot->txn_fallback != 0u) {
+            if (frame->payload[0] == (uint8_t)ECSP_RS_OK &&
+                frame->payload_len >= 2u) {
+                finish_long_result(h, slot, frame->payload[1]);
+            } else {
+                finish_txn(h, slot, ECSP_OK, frame->payload[0], NULL, 0u);
+            }
+            return;
+        }
         finish_txn(h, slot, ECSP_OK, frame->payload[0],
                    &frame->payload[1],
                    (uint16_t)(frame->payload_len - 1u));
+    }
+}
+
+/* The preempting 0x07 was queued by submit. Report the abandoned command
+ * before that reset is transmitted, so the callback runs on this step. */
+static void fire_abandoned(ecsp_host_t *h)
+{
+    size_t i;
+
+    for (i = 0u; i < h->slave_count; i++) {
+        ecsp_host_slot_t *slot = &h->slots[i];
+        ecsp_txn_cb_t cb;
+        void *user;
+        uint8_t cmd;
+        uint8_t board;
+
+        if (slot->txn_abandon == 0u) {
+            continue;
+        }
+        cb = slot->abandon_cb;
+        user = slot->abandon_user;
+        cmd = slot->abandon_cmd;
+        board = slot->board_addr;
+        slot->txn_abandon = 0u;
+        slot->abandon_cb = NULL;
+        slot->abandon_user = NULL;
+        slot->abandon_cmd = 0u;
+        if (cb != NULL) {
+            cb(h, board, cmd, ECSP_E_RESET, 0u, NULL, 0u, user);
+        }
     }
 }
 
@@ -565,6 +748,7 @@ int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
     }
     h->in_step = 1u;
     pump_rx(h, now_ms);
+    fire_abandoned(h);
     for (i = 0u; i < h->slave_count; i++) {
         ecsp_host_slot_t *slot = &h->slots[i];
 
@@ -573,6 +757,7 @@ int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
         }
         progress_bringup(h, slot, now_ms);
         progress_txn(h, slot, now_ms);
+        progress_result(h, slot, now_ms);
     }
     emit_queued(h, now_ms);
     for (i = 0u; i < h->slave_count; i++) {

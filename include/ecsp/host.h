@@ -17,6 +17,16 @@
  * It may submit; the next step sends those requests in submission order. It
  * must not step this same host (ECSP_E_REENT, and nothing moves). A second
  * host context may be stepped from the callback.
+ *
+ * Ticket #12: a long-running accept (0x08 / 0x0C answered 0x00 with
+ * T_exec_max) moves the transaction to wait-result and does not run the
+ * callback yet (spec table 4-2, 4.3). The callback runs once when the result
+ * event arrives, or when the get-result query that replaces a lost event
+ * is answered. Submitting 0x07 while waiting only enqueues the reset.
+ * The next step ends that transaction with ECSP_E_RESET — the outcome is
+ * not assumed — and then sends the reset.
+ * A handshake report after the session exists starts a new probe
+ * (spec 4.1.4, 4.4).
  */
 
 #include <stddef.h>
@@ -51,8 +61,7 @@ typedef enum {
                                     * establishment window ran out (7.2.1, 4.1.1) */
 } ecsp_host_event_t;
 
-/* Transaction axis for one slave (spec table 4-2). Wait-result is the
- * long-running state and is not entered by this slice. */
+/* Transaction axis for one slave (spec table 4-2). */
 typedef enum {
     ECSP_TXN_IDLE = 0,     /* 空闲 */
     ECSP_TXN_QUEUED,       /* 待发送 */
@@ -65,10 +74,22 @@ typedef void (*ecsp_host_event_cb_t)(ecsp_host_t *h, uint8_t board_addr,
 
 /* Delivered once, on the ecsp_host_step stack, when a submitted transaction
  * ends. `status` is ECSP_OK when an answer arrived (`response_code` and
- * `payload` are that answer, payload excluding the response code). A silence
- * limit passes ECSP_E_TIMEOUT, heartbeat dropout passes ECSP_E_OFFLINE, and a
- * full transmit FIFO passes ECSP_E_LINK. The callback may submit; it must
- * not call ecsp_host_step on this same host. */
+ * `payload` are that answer, payload excluding the response code). A
+ * long-running command is the exception to "answer means done": the accept
+ * (0x00 + T_exec_max) only enters wait-result, and this callback runs when
+ * the result is known. The result event and the get-result fallback both
+ * report ECSP_OK, response code 0x00, and the one-byte result as `payload`
+ * (spec 4.3). A get-result of 0x13 reports that response code and an empty
+ * payload (spec 5.2.9): the outcome was discarded. A silence limit passes
+ * ECSP_E_TIMEOUT, heartbeat dropout passes ECSP_E_OFFLINE, a full transmit
+ * FIFO passes ECSP_E_LINK, and a reset that discards the in-flight command
+ * passes ECSP_E_RESET. The callback may submit; it must not call
+ * ecsp_host_step on this same host.
+ *
+ * A get-result of 0x00 with result 0x11 (still executing past T_exec_max)
+ * ends this transaction with that result byte. The caller submits the stop
+ * (control 0x01) with a new sequence (spec 4.3). Sequence bytes belong to
+ * the submit payload; the library does not allocate the next one. */
 typedef void (*ecsp_txn_cb_t)(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                               int status, uint8_t response_code,
                               const uint8_t *payload, uint16_t len, void *user);
@@ -107,10 +128,18 @@ typedef struct {
     uint8_t        txn_cmd;
     uint8_t        txn_attempt;
     uint8_t        txn_defer; /* submitted during step: send on the next step */
+    uint8_t        txn_wire_cmd; /* command byte of the frame on the wire */
+    uint8_t        txn_fallback; /* 1 while get-result (spec 4.3) is in flight */
+    uint8_t        txn_abandon; /* 1: next step reports ECSP_E_RESET, then sends */
+    uint8_t        abandon_cmd;
     uint16_t       txn_len;
+    uint16_t       txn_exec_max; /* T_exec_max from the accept answer */
     uint32_t       txn_sent_ms;
+    uint32_t       txn_result_ms; /* when wait-result started */
     ecsp_txn_cb_t  txn_cb;
     void          *txn_user;
+    ecsp_txn_cb_t  abandon_cb;
+    void          *abandon_user;
     uint8_t        txn_payload[ECSP_MAX_FRAME];
     uint32_t       last_rx_ms;
     uint8_t        last_rx_valid;
