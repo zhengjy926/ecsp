@@ -24,6 +24,9 @@
 #define FAKE_REQ_LEN       2u
 #define FAKE_ANY_CMD       0x31u
 #define FAKE_VALIDATED_CMD 0x32u
+#define CACHED_CMD         0x33u
+#define PREEMPT_CMD        0x34u
+#define CONCURRENT_CMD     0x35u
 
 static uint8_t g_rx[ECSP_MAX_FRAME];
 static uint8_t g_tx[2u * ECSP_MAX_FRAME];
@@ -34,6 +37,9 @@ static int g_fake_calls;
 static int g_fake_rs;
 static int g_any_calls;
 static int g_validated_calls;
+static int g_cached_calls;
+static int g_preempt_calls;
+static int g_concurrent_calls;
 
 static int fake_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
                         uint8_t *resp, size_t cap, size_t *resp_len)
@@ -94,12 +100,51 @@ static int validated_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
+static int cached_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
+                          uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    (void)s;
+    (void)req;
+    (void)resp;
+    (void)cap;
+    g_cached_calls++;
+    *resp_len = 0u;
+    return ECSP_RS_OK;
+}
+
+static int preempt_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
+                           uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    (void)s;
+    (void)req;
+    (void)resp;
+    (void)cap;
+    g_preempt_calls++;
+    *resp_len = 0u;
+    return ECSP_RS_OK;
+}
+
+static int concurrent_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
+                              uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    (void)s;
+    (void)req;
+    (void)resp;
+    (void)cap;
+    g_concurrent_calls++;
+    *resp_len = 0u;
+    return ECSP_RS_OK;
+}
+
 static const ecsp_cmd_entry_t g_board_table[] = {
     { FAKE_CMD, ECSP_CMD_NONE, FAKE_REQ_LEN, 0u, NULL, fake_handler },
     { FAKE_ANY_CMD, ECSP_CMD_NONE, ECSP_CMD_LEN_ANY, 0u, NULL,
       any_length_handler },
     { FAKE_VALIDATED_CMD, ECSP_CMD_NONE, ECSP_CMD_LEN_ANY, 0u,
-      validated_validator, validated_handler }
+      validated_validator, validated_handler },
+    { CACHED_CMD, ECSP_CMD_TXN_SEQ, 1u, 0u, NULL, cached_handler },
+    { PREEMPT_CMD, ECSP_CMD_PREEMPTIVE, 1u, 0u, NULL, preempt_handler },
+    { CONCURRENT_CMD, ECSP_CMD_CONCURRENT, 1u, 0u, NULL, concurrent_handler }
 };
 
 static void init_slave(void)
@@ -115,6 +160,9 @@ static void init_slave(void)
     g_fake_rs = 0x55;
     g_any_calls = 0;
     g_validated_calls = 0;
+    g_cached_calls = 0;
+    g_preempt_calls = 0;
+    g_concurrent_calls = 0;
 
     memcpy(g_identity.hardware_version.b, hw_version, sizeof hw_version);
     memcpy(g_identity.serial_number.b, serial, sizeof serial);
@@ -365,6 +413,87 @@ static void test_board_validator_maps_length_and_value_errors(void)
     expect_answer(FAKE_VALIDATED_CMD, ECSP_RS_OK, NULL, 0u);
 }
 
+/* spec 5.2.8 ceiling, little-endian. Accepting 0x08 is what makes the slave busy. */
+static void start_selftest(void)
+{
+    static const uint8_t start[2] = { 0x01u, ECSP_CTRL_START };
+    static const uint8_t tmax[2] = { 0xD0u, 0x07u };
+
+    send(ECSP_CMD_CONTROL_SELFTEST, start, sizeof start);
+    expect_answer(ECSP_CMD_CONTROL_SELFTEST, ECSP_RS_OK, tmax, sizeof tmax);
+}
+
+static void test_length_gate_precedes_busy_gate(void)
+{
+    /* ADR-0002 step 5 before step 7: a short 0x08 while busy is 0x02, not 0x11. */
+    static const uint8_t seq_only[1] = { 0x02u };
+
+    init_slave();
+    handshake();
+    start_selftest();
+
+    send(ECSP_CMD_CONTROL_SELFTEST, seq_only, sizeof seq_only);
+    expect_answer(ECSP_CMD_CONTROL_SELFTEST, ECSP_RS_BAD_LEN, NULL, 0u);
+}
+
+static void test_cache_hit_precedes_busy_gate(void)
+{
+    /* ADR-0002 step 6 before step 7: retransmitting an accepted non-preemptive
+     * action while busy replays the cached answer. It must not become 0x11
+     * and must not run the handler again. */
+    static const uint8_t seq[1] = { 0x01u };
+
+    init_slave();
+    handshake();
+
+    send(CACHED_CMD, seq, sizeof seq);
+    expect_answer(CACHED_CMD, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_cached_calls);
+
+    start_selftest();
+
+    send(CACHED_CMD, seq, sizeof seq);
+    expect_answer(CACHED_CMD, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_cached_calls);
+}
+
+static void test_busy_gate_precedes_parameter_gate(void)
+{
+    /* ADR-0002 step 7 before step 8: an illegal low-power mode while busy is
+     * 0x11, not 0x03. A new non-preemptive action is 0x11 and its handler does
+     * not run. A preemptive command is accepted. An illegal control on the
+     * preemptive self-test command itself still reaches step 8 and is 0x03. */
+    static const uint8_t bad_mode[1] = { 0x02u };
+    static const uint8_t new_seq[1] = { 0x02u };
+    static const uint8_t preempt[1] = { 0x00u };
+    static const uint8_t concurrent[1] = { 0x00u };
+    static const uint8_t bad_ctrl[2] = { 0x09u, 0x05u };
+
+    init_slave();
+    handshake();
+    start_selftest();
+
+    send(ECSP_CMD_SET_LOW_POWER, bad_mode, sizeof bad_mode);
+    expect_answer(ECSP_CMD_SET_LOW_POWER, ECSP_RS_BUSY, NULL, 0u);
+
+    send(CACHED_CMD, new_seq, sizeof new_seq);
+    expect_answer(CACHED_CMD, ECSP_RS_BUSY, NULL, 0u);
+    CHECK_EQ(0, g_cached_calls);
+
+    send(PREEMPT_CMD, preempt, sizeof preempt);
+    expect_answer(PREEMPT_CMD, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_preempt_calls);
+
+    /* Spec 4.3.1 orthogonal action: accepted, and the self-test stays in flight. */
+    send(CONCURRENT_CMD, concurrent, sizeof concurrent);
+    expect_answer(CONCURRENT_CMD, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_concurrent_calls);
+    CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, ecsp_slave_long_run_cmd(&g_slave));
+
+    send(ECSP_CMD_CONTROL_SELFTEST, bad_ctrl, sizeof bad_ctrl);
+    expect_answer(ECSP_CMD_CONTROL_SELFTEST, ECSP_RS_BAD_PARAM, NULL, 0u);
+}
+
 int main(void)
 {
     test_address_mismatch_is_silent_before_unknown_command();
@@ -380,6 +509,9 @@ int main(void)
     test_handler_return_code_is_not_overridden();
     test_board_command_with_variable_length();
     test_board_validator_maps_length_and_value_errors();
+    test_length_gate_precedes_busy_gate();
+    test_cache_hit_precedes_busy_gate();
+    test_busy_gate_precedes_parameter_gate();
 
     return ecsp_test_report();
 }

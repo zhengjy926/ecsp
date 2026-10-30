@@ -150,9 +150,11 @@ typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
 
 typedef enum {
     ECSP_CMD_NONE       = 0,
-    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* 长耗时执行中仍须受理（如停止命令） */
+    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* 长耗时执行中仍须受理（停止控制因此能进 handler） */
     ECSP_CMD_IDEMPOTENT = 1u << 1,  /* 幂等动作：不带事务序号 */
-    ECSP_CMD_TXN_SEQ    = 1u << 2   /* 非幂等动作：载荷首字节即事务序号，应答按 (cmd, seq) 缓存并回放 */
+    ECSP_CMD_TXN_SEQ    = 1u << 2,  /* 非幂等动作：载荷首字节即事务序号，应答按 (cmd, seq) 缓存并回放 */
+    ECSP_CMD_QUERY      = 1u << 3,  /* 获取类：忙期间仍受理，但不抢占（规范 4.3） */
+    ECSP_CMD_CONCURRENT = 1u << 4   /* 资源正交的动作：忙期间仍受理，不抢占（规范 4.3.1） */
 } ecsp_cmd_flags_t;
 
 typedef int (*ecsp_cmd_validate_t)(const ecsp_frame_t *req);  /* ECSP_OK / ECSP_E_LEN / ECSP_E_VAL */
@@ -182,6 +184,10 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
 int  ecsp_slave_send_event(ecsp_slave_t *s, uint8_t cmd, const uint8_t *payload, uint16_t len);
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
 int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
+typedef int (*ecsp_slave_safe_abort_t)(ecsp_slave_t *s, uint8_t cmd);
+void    ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn);
+uint8_t ecsp_slave_long_run_cmd(const ecsp_slave_t *s);
+int     ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result);
 ```
 
 `ecsp_slave_cfg_t` 还传入：`identity`（调用方持有的标识存储，0x03/0x05 原地写入，使用方据此自行落 NVM）、`fault_word`（0x12 返回的注入故障字）、`cmds`（0x30~0xEF 板卡命令表）。发送缓冲至少容纳最大的通用应答或板卡表声明的 `resp_max` 应答；`ecsp_slave_init` 会拒绝过小的缓冲。命令可以声明 `validate`（第 8 步）：返回 `ECSP_E_LEN` 映射 0x02，返回 `ECSP_E_VAL` 映射 0x03。handler 只写应答载荷的**数据**部分（不含应答码），返回值即应答码；框架不覆盖该返回值，非 0x00 应答不携带数据。命令表只用于板卡命令，通用命令 0x01~0x12 的语义由库内处理。
@@ -196,7 +202,7 @@ int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
 | 4 | 会话未建立且命令不是 0x01 | 0x10 |
 | 5 | 载荷长度不符 | 0x02 |
 | 6 | 事务缓存命中 `(cmd, seq)` | 回放缓存应答 |
-| 7 | 长耗时执行中，且该命令未标 `ECSP_CMD_PREEMPTIVE` | 0x11 |
+| 7 | 长耗时执行中，且该命令未标 `ECSP_CMD_PREEMPTIVE`、`ECSP_CMD_QUERY`、`ECSP_CMD_CONCURRENT` 之一 | 0x11 |
 | 8 | 参数校验失败 | 0x03 |
 | 9 | 执行 handler，其返回值即应答码 | handler 的返回值 |
 
@@ -209,11 +215,19 @@ int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
 * `last_send`：任一帧入队即刷新，`就绪` 后据此判心跳——距上次发送满 `ECSP_HEARTBEAT_MS` 才发 0x10（规范 5.2.16 允许 ±10%，产品覆盖时同步调整 7.2.1 的掉线门限）；
 * `last_report`：只在 0x01 上报真正入队后刷新，因此 `等待握手` 期间的 1 Hz 上报是固定节拍，不被应答或 0x10 拒绝帧饿死（规范 4.1.2"以 1 Hz 频率……直至握手成功"）。规范 4.1.2 未给该周期容差或产品覆盖权，所以它不是配置宏。
 
-"发送成功"在库内只能观察到自己把整帧放进调用方的发送 FIFO，因此入队即视为发出（规范 7.2.2 的 `last_send_time`）；FIFO 放不下时该帧顺延到下一拍，且不推进对应时间戳。每个 step 至多发出一帧周期帧，因此 `now_ms` 回绕或时钟跳跃既不会把 0x01/0x10 永久拖没，也不会一次补发多帧。已就绪后再收到握手请求只应答 0x00 并保持就绪，不恢复 0x01 上报（规范 4.1.4 的"停止正在执行的所有业务"要等长耗时票据把执行轴补齐后再接上）；周期上报不受 `reset_requested` 影响，复位真正发生前心跳照发（ADR-0008）。
+"发送成功"在库内只能观察到自己把整帧放进调用方的发送 FIFO，因此入队即视为发出（规范 7.2.2 的 `last_send_time`）；FIFO 放不下时该帧顺延到下一拍，且不推进对应时间戳。每个 step 至多发出一帧周期帧，因此 `now_ms` 回绕或时钟跳跃既不会把 0x01/0x10 永久拖没，也不会一次补发多帧。已就绪后再收到握手请求只应答 0x00 并保持就绪，不恢复 0x01 上报；若此时有长耗时命令在执行，先调用安全中止回调再结束协议侧执行，不发送结果事件（规范 4.1.4）。中止回调缺失或失败时握手仍应答 0x00，不因此置故障位——置位上报只属于 0x07 无法安全中止的路径（规范 4.4）。周期上报不受 `reset_requested` 影响，复位真正发生前心跳照发（ADR-0008）。
 
 **事务缓存**（ADR-0004）：FIFO，键 `(cmd, seq)`，存完整应答帧副本，每条目 `ECSP_MAX_FRAME` 字节。缓存容量耗尽时覆盖最旧条目。**软复位后清空**（在本库里就是重新初始化上下文），**每收到一次被受理的握手请求（0x01）也清空**（被管线拒绝的握手不算——一帧坏帧不该把在途事务的保护清掉）。超过一个缓存槽长度的应答照常发给主机，只是不缓存；`ecsp_frame_encode` 已把帧限制在 `ECSP_MAX_FRAME` 内，因此该分支是防御性的，不构成可达状态。
 
-**长耗时命令**：受理时置"忙"，启动 `now + T_exec_max`；到点未完成则后续获取结果应答 `0x00/0x11`（规范 4.3）；完成或中止时发结果事件并清"忙"。忙期间安全抢占类命令（如停止）必须放行——由命令表里的 `ecsp_cmd_flags` 标记，不硬编码命令码。系统复位（0x07）是通用层规定的抢占命令，不经命令表、不看标志位：忙期间到达时必须先走安全中止序列再应答复位（规范 4.4，ADR-0007）。
+**长耗时命令**（0x08/0x09/0x0A 与 0x0C/0x0D/0x0E，同一时刻至多一条在执行）：
+
+* 启动受理应答 `0x00` + `T_exec_max`（u16le）。自检默认 `ECSP_SELFTEST_EXEC_MAX_MS`（2000），升级默认 `ECSP_UPGRADE_EXEC_MAX_MS`（60000）。拒绝应答只有应答码，不带该字段。
+* 受理后 `ecsp_slave_long_run_cmd` 返回该命令码。产品做完后调用 `ecsp_slave_long_run_complete(result)`（`result` 不得为 0x11）。下一次 `step` 发送一次结果事件（0x0A 或 0x0E），不重发。
+* 未完成时获取结果应答 `0x00/0x11`，包括已经超过 `T_exec_max`；到点不自动完成、也不自动失败。从未启动，或结局被复位/握手丢弃时，获取结果应答 `0x13` 且不带结果码。
+* 停止（控制码 0x01，新事务序号）先调用安全中止回调（若已注册），再受理并携带 `T_exec_max`，在途命令结果码变为 `0x21`，发送一次结果事件。回调缺失或失败不改这个结果码；`0x20` 只用于复位抢占失败。当前没有该命令的在途实例时应答 `0x13`。
+* 忙期间：`ECSP_CMD_QUERY` 的获取类放行；`ECSP_CMD_PREEMPTIVE` 放行（0x08/0x0C 因此放行，由 handler 拒绝第二次启动）；`ECSP_CMD_CONCURRENT` 放行且不结束在途命令（规范 4.3.1 的资源正交类）；其余动作/设置应答 `0x11`。0x07 在通用命令表里带 `ECSP_CMD_PREEMPTIVE`，所以第 7 步放行；安全中止本身在 handler 里完成，不进入板卡命令表。
+* 忙期间 0x07：先调用 `ecsp_slave_set_safe_abort` 注册的序列，且在应答入队之前调用。返回 `ECSP_OK` 则丢弃在途命令（不发结果事件）、应答 `0x00` 并置 `reset_requested`。回调为 NULL 或返回非 `ECSP_OK`：应答 `0x20`、不复位、在途命令继续，并将故障字 bit0 置位；该位由 0 变 1 时发送一帧 0x11。bit0 同时是表 5-3 的“系统自检失败”：自检以非 0x00 且非 0x21 的结果结束时置位，以 0x00 结束时清除（清除不上报）。通用层没有别的可写故障位。
+* 回调在 `ecsp_slave_step` 的栈上同步执行，不得再次调用 `ecsp_slave_step`。
 
 ## 7 L4 主机链路管理
 

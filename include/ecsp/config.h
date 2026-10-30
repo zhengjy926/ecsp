@@ -41,6 +41,23 @@
 #define ECSP_HEARTBEAT_MS 1000u
 #endif
 
+/* Long-running accept field T_exec_max, milliseconds, uint16 little-endian
+ * (spec 4.3, 5.2.8, 5.2.12). These are the recommended ceilings; a product
+ * overrides them and declares the value in its product spec. Reaching the
+ * deadline does not finish the command: a later get-result still answers
+ * 0x00/0x11 until the product completes it or the host stops it. */
+#ifndef ECSP_SELFTEST_EXEC_MAX_MS
+#define ECSP_SELFTEST_EXEC_MAX_MS 2000u
+#endif
+
+#ifndef ECSP_UPGRADE_EXEC_MAX_MS
+#define ECSP_UPGRADE_EXEC_MAX_MS 60000u
+#endif
+
+#if (ECSP_SELFTEST_EXEC_MAX_MS > 65535u) || (ECSP_UPGRADE_EXEC_MAX_MS > 65535u)
+#error "T_exec_max must fit in a uint16 (spec 4.3)"
+#endif
+
 /* Local error codes (docs/specs/ecsp-impl-spec.md section 3): functions return
  * 0 (ECSP_OK) on success and a negative value on failure. These are library
  * failure reasons, never protocol response codes - those live only inside

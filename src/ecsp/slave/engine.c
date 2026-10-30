@@ -6,6 +6,7 @@
 
 #include "ecsp/cmds.h"
 #include "ecsp/frame.h"
+#include "long_run.h"
 #include "session.h"
 #include "txn_cache.h"
 
@@ -50,6 +51,20 @@ static int valid_low_power_mode(const ecsp_frame_t *req)
     return ecsp_low_power_mode_valid(req->payload[0]) ? ECSP_OK : ECSP_E_VAL;
 }
 
+static int valid_long_ctrl(const ecsp_frame_t *req)
+{
+    uint8_t ctrl;
+
+    if (req->payload_len < (ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN)) {
+        return ECSP_E_LEN;
+    }
+    ctrl = req->payload[ECSP_TXN_SEQ_LEN];
+    if ((ctrl == ECSP_CTRL_START) || (ctrl == ECSP_CTRL_STOP)) {
+        return ECSP_OK;
+    }
+    return ECSP_E_VAL;
+}
+
 /* ---- handlers (ADR-0002 step 9) ---- */
 
 static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
@@ -59,12 +74,11 @@ static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
     (void)resp;
     (void)cap;
     *resp_len = 0u;
-    /* Answer first, enter the ready state afterwards (spec 5.2.1). The engine
-     * applies the state change only once the answer is queued. When the slave
-     * is already ready this is the "host reset unexpectedly" case: answer 0x00,
-     * stay ready and do not resume the 0x01 report stream (spec 4.1.4). The
-     * other half of 4.1.4 - aborting in-flight business - has no execution
-     * axis to abort yet; it arrives with the long-running ticket. */
+    /* Stop in-flight work before the answer is queued (spec 4.1.4). The
+     * handshake is still answered 0x00: a failed safe-abort latches the fault
+     * bit but does not refuse the host's restart. Already-ready stays ready
+     * and does not resume the 0x01 report (spec 4.1.4, 5.2.1). */
+    ecsp_long_run_on_handshake(s);
     s->pending_ready = 1u;
     return ECSP_RS_OK;
 }
@@ -124,6 +138,8 @@ static int h_get_serial_number(ecsp_slave_t *s, const ecsp_frame_t *req,
 static int h_system_reset(ecsp_slave_t *s, const ecsp_frame_t *req,
                           uint8_t *resp, size_t cap, size_t *resp_len)
 {
+    int rs;
+
     (void)req;
     (void)resp;
     (void)cap;
@@ -136,10 +152,31 @@ static int h_system_reset(ecsp_slave_t *s, const ecsp_frame_t *req,
     if (s->reset_requested != 0u) {
         return ECSP_RS_BUSY;
     }
+    /* Busy: safe-abort first, then answer. Failure answers 0x20 and does not
+     * request a reset (spec 4.4, ADR-0007). */
+    rs = ecsp_long_run_preempt_for_reset(s);
+    if (rs != (int)ECSP_RS_OK) {
+        return rs;
+    }
     /* Answer first, reset afterwards (spec 5.2.7); the engine applies the
      * reset once the answer is queued. */
     s->pending_reset = 1u;
     return ECSP_RS_OK;
+}
+
+static int h_long_action(ecsp_slave_t *s, const ecsp_frame_t *req,
+                         uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    if (req->payload[ECSP_TXN_SEQ_LEN] == ECSP_CTRL_STOP) {
+        return ecsp_long_run_stop(s, req->cmd, resp, cap, resp_len);
+    }
+    return ecsp_long_run_start(s, req->cmd, resp, cap, resp_len);
+}
+
+static int h_long_query(ecsp_slave_t *s, const ecsp_frame_t *req,
+                        uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    return ecsp_long_run_query(s, req->cmd, resp, cap, resp_len);
 }
 
 static int h_set_low_power(ecsp_slave_t *s, const ecsp_frame_t *req,
@@ -162,27 +199,37 @@ static int h_get_fault(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
-/* Common commands this slice implements, in command-code order. The session,
- * self-test and upgrade commands land with later tickets; until then their
- * codes are simply absent and answered 0x04. */
+/* Common commands, in command-code order. Event-class codes (0x0A, 0x0E,
+ * 0x10, 0x11) stay out of this table: a host request using one is 0x04.
+ * 0x0F is a later ticket. */
 static const common_cmd_t g_common_cmds[] = {
     { ECSP_CMD_HANDSHAKE, ECSP_CMD_PREEMPTIVE, 0u, 0u, NULL,
       h_handshake },
-    { ECSP_CMD_GET_VERSION, 0u, 0u, ECSP_VERSION_LEN, NULL,
+    { ECSP_CMD_GET_VERSION, ECSP_CMD_QUERY, 0u, ECSP_VERSION_LEN, NULL,
       h_get_version },
     { ECSP_CMD_SET_HW_VERSION, 0u, ECSP_VERSION_LEN, 0u, valid_hw_version,
       h_set_hw_version },
-    { ECSP_CMD_GET_HW_VERSION, 0u, 0u, ECSP_VERSION_LEN, NULL,
+    { ECSP_CMD_GET_HW_VERSION, ECSP_CMD_QUERY, 0u, ECSP_VERSION_LEN, NULL,
       h_get_hw_version },
     { ECSP_CMD_SET_SERIAL, 0u, ECSP_SERIAL_LEN, 0u, valid_serial_number,
       h_set_serial_number },
-    { ECSP_CMD_GET_SERIAL, 0u, 0u, ECSP_SERIAL_LEN, NULL,
+    { ECSP_CMD_GET_SERIAL, ECSP_CMD_QUERY, 0u, ECSP_SERIAL_LEN, NULL,
       h_get_serial_number },
     { ECSP_CMD_SYSTEM_RESET, (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
       ECSP_TXN_SEQ_LEN, 0u, NULL, h_system_reset },
+    { ECSP_CMD_CONTROL_SELFTEST,
+      (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
+      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, valid_long_ctrl,
+      h_long_action },
+    { ECSP_CMD_GET_SELFTEST, ECSP_CMD_QUERY, 0u, 1u, NULL, h_long_query },
     { ECSP_CMD_SET_LOW_POWER, 0u, 1u, 0u, valid_low_power_mode,
       h_set_low_power },
-    { ECSP_CMD_GET_FAULT, 0u, 0u, 1u, NULL, h_get_fault },
+    { ECSP_CMD_START_UPGRADE,
+      (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
+      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, valid_long_ctrl,
+      h_long_action },
+    { ECSP_CMD_GET_UPGRADE, ECSP_CMD_QUERY, 0u, 1u, NULL, h_long_query },
+    { ECSP_CMD_GET_FAULT, ECSP_CMD_QUERY, 0u, 1u, NULL, h_get_fault },
 };
 
 #define ECSP_COMMON_CMD_COUNT \
@@ -265,6 +312,8 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->pending_ready = 0u;
     s->pending_reset = 0u;
     s->reset_requested = 0u;
+    s->in_step = 0u;
+    ecsp_long_run_init(s);
     /* A soft reset empties the transaction cache (ADR-0004). Re-initialising
      * the context is how this library models that reset. */
     ecsp_txn_cache_clear(s);
@@ -407,6 +456,12 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
     if (s == NULL) {
         return;
     }
+    /* A safe-abort callback runs on this stack and must not re-enter
+     * (ADR-0005). Drop the re-entrant call; the outer step finishes. */
+    if (s->in_step != 0u) {
+        return;
+    }
+    s->in_step = 1u;
 
     /* The session clocks have no value before the first step: latch them so
      * the first periodic frame is due a full period later, not immediately
@@ -515,7 +570,23 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             }
         }
 
-        /* Step 7: long-running busy -> 0x11 (later ticket). */
+        /* Step 7: long-running busy. Getters, preemptive commands and
+         * orthogonal actions pass; everything else is 0x11 (spec 4.3, 4.3.1).
+         * 0x07, 0x08 and 0x0C are marked preemptive, so a reset or a stop
+         * reaches the handler. The handler rejects a second start; the reset
+         * handler runs the safe abort before it answers (spec 4.4). */
+        if (ecsp_long_run_is_busy(s) != 0) {
+            uint8_t allow = (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_QUERY |
+                                     ECSP_CMD_CONCURRENT);
+
+            if ((flags & allow) == 0u) {
+                if (!answer_rs(s, frame.cmd, ECSP_RS_BUSY, now_ms)) {
+                    break;
+                }
+                rx_drop_front(s, consumed);
+                continue;
+            }
+        }
 
         /* Step 8: parameters. The command's validator decides whether a bad
          * variable length is a length error (0x02) or an illegal value (0x03);
@@ -587,11 +658,16 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         rx_drop_front(s, consumed);
     }
 
+    /* Fault report, then the one-shot result event, then at most one periodic
+     * frame. A full FIFO leaves the pending frame for the next step. */
+    ecsp_long_run_flush(s, now_ms, send_frame);
+
     /* Received frames were answered first: a ready slave that just answered
      * needs no heartbeat yet, because the answer restarted the window
      * (spec 7.2.2). The waiting-state 0x01 report is on its own fixed cadence
      * and is therefore not suppressed by answers (spec 4.1.2). */
     report_if_due(s, now_ms);
+    s->in_step = 0u;
 }
 
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s)

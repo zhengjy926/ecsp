@@ -43,20 +43,32 @@ static void ecsp_test_fail(const char *file, int line, const char *msg)
         } \
     } while (0)
 
-/* Compare two byte sequences: length first, then contents. */
+/* Compare two byte sequences: length first, then contents.
+ * A function, not an if() in the macro: MSVC /W4 treats
+ * `if (sizeof a != sizeof a)` as C4127 and /WX would fail the existing tests. */
+static void ecsp_test_check_mem(const char *file, int line,
+                                const void *want, size_t want_len,
+                                const void *got, size_t got_len)
+{
+    char ecsp_test_msg_[96];
+
+    ecsp_test_checks++;
+    if (want_len != got_len) {
+        (void)snprintf(ecsp_test_msg_, sizeof ecsp_test_msg_,
+                       "byte length (want %lu, got %lu)",
+                       (unsigned long)want_len, (unsigned long)got_len);
+        ecsp_test_fail(file, line, ecsp_test_msg_);
+    } else if ((want_len > 0u) &&
+               (memcmp(want, got, want_len) != 0)) {
+        ecsp_test_fail(file, line, "byte sequence mismatch");
+    } else {
+        /* lengths match and bytes match */
+    }
+}
+
 #define CHECK_MEM(want, want_len, got, got_len) \
-    do { \
-        ecsp_test_checks++; \
-        if ((size_t)(want_len) != (size_t)(got_len)) { \
-            char ecsp_test_msg_[96]; \
-            (void)snprintf(ecsp_test_msg_, sizeof ecsp_test_msg_, \
-                           "byte length (want %lu, got %lu)", \
-                           (unsigned long)(want_len), (unsigned long)(got_len)); \
-            ecsp_test_fail(__FILE__, __LINE__, ecsp_test_msg_); \
-        } else if (memcmp((want), (got), (size_t)(want_len)) != 0) { \
-            ecsp_test_fail(__FILE__, __LINE__, "byte sequence mismatch"); \
-        } \
-    } while (0)
+    ecsp_test_check_mem(__FILE__, __LINE__, (want), (size_t)(want_len), \
+                        (got), (size_t)(got_len))
 
 /* Print the tally; returns 1 when any check failed, else 0. */
 static int ecsp_test_report(void)

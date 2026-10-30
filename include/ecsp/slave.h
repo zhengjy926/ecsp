@@ -15,7 +15,8 @@
  *   4 session not established and command != 0x01 -> 0x10
  *   5 payload length mismatch   -> 0x02
  *   6 transaction cache hit     -> replay the cached answer frame
- *   7 long-running busy         -> 0x11 (later ticket)
+ *   7 long-running busy, and the command is neither preemptive nor a
+ *     query                       -> 0x11
  *   8 invalid parameter         -> 0x03
  *   9 handler                   -> the handler's return code
  *
@@ -62,12 +63,25 @@ typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
 
 typedef enum {
     ECSP_CMD_NONE       = 0,
-    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* must be accepted while long-running (4.4) */
+    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* accepted while long-running; a stop
+                                     * reaches its handler (spec 4.3.1, 4.4) */
     ECSP_CMD_IDEMPOTENT = 1u << 1,  /* idempotent action: carries no transaction seq */
-    ECSP_CMD_TXN_SEQ    = 1u << 2   /* non-idempotent action: payload[0] is the
+    ECSP_CMD_TXN_SEQ    = 1u << 2,  /* non-idempotent action: payload[0] is the
                                      * transaction sequence, and the answer is
                                      * cached by (cmd, seq) and replayed (4.2) */
+    ECSP_CMD_QUERY      = 1u << 3,  /* getter: accepted while long-running,
+                                     * does not preempt (spec 4.3) */
+    ECSP_CMD_CONCURRENT = 1u << 4   /* orthogonal action: accepted while
+                                     * long-running, does not preempt
+                                     * (spec 4.3.1) */
 } ecsp_cmd_flags_t;
+
+/* Product safe-abort sequence for the in-flight long-running command
+ * (spec 4.4, ADR-0007). Runs on the ecsp_slave_step stack, before the
+ * answer is queued. Return ECSP_OK once the actuator is in a safe state.
+ * Any other return, or a NULL registration, means the sequence is missing
+ * or failed. Must not call ecsp_slave_step. */
+typedef int (*ecsp_slave_safe_abort_t)(ecsp_slave_t *s, uint8_t cmd);
 
 /* Commands that carry a transaction sequence set ECSP_CMD_TXN_SEQ: their first
  * request payload byte is the one-byte sequence, and the engine caches the
@@ -171,6 +185,21 @@ struct ecsp_slave {
     ecsp_slave_txn_entry_t txn_cache[ECSP_SLAVE_TXN_SLOTS];
     size_t txn_cache_head;  /* index of the oldest live entry */
     size_t txn_cache_count; /* live entries, 0 .. ECSP_SLAVE_TXN_SLOTS */
+    /* Long-running execution (spec 4.3, 4.4). lr_cmd is 0 while idle.
+     * st_* / up_* are the last finished result of that command; a reset or
+     * host-restart handshake drops the in-flight one without a result event. */
+    ecsp_slave_safe_abort_t safe_abort;
+    uint8_t lr_cmd;
+    uint8_t st_known;
+    uint8_t st_result;
+    uint8_t up_known;
+    uint8_t up_result;
+    uint8_t lr_event_pending;
+    uint8_t lr_event_cmd;
+    uint8_t lr_event_result;
+    uint8_t fault_report_pending;
+    uint8_t fault_report_word;
+    uint8_t in_step; /* 1 while ecsp_slave_step is on the stack */
 };
 
 /* Initialise *s from *cfg. Returns ECSP_OK, or ECSP_E_ARG if a buffer/identity
@@ -200,6 +229,21 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
  * ECSP_LOW_POWER_ENTER, spec 5.2.11). The library only records the request;
  * the product applies it. Returns EXIT for a NULL context. */
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
+
+/* Register the safe-abort sequence used when 0x07 or an unexpected handshake
+ * arrives during a long-running command (spec 4.4, 4.1.4). NULL (the state
+ * after init) means the sequence is undefined. The callback runs on the
+ * step stack and must not call ecsp_slave_step. */
+void ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn);
+
+/* Command code of the in-flight long-running command, or 0 when idle. */
+uint8_t ecsp_slave_long_run_cmd(const ecsp_slave_t *s);
+
+/* The product finished the in-flight command with `result` (spec 4.3).
+ * 0x11 is not a completion code. The result event is queued for the next
+ * step and sent once. Returns ECSP_OK, ECSP_E_ARG when nothing is running
+ * or s is NULL, or ECSP_E_VAL when result is 0x11. */
+int ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result);
 
 /* 1 once a 0x07 answer has been queued. The product must drain the transmit
  * FIFO and then reset the MCU; the library cannot perform the hardware reset

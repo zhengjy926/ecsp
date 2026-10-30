@@ -76,6 +76,21 @@ typedef struct {
 #define ECSP_RS_UNSUPPORTED    0x04u
 #define ECSP_RS_NOT_HANDSHAKEN 0x10u
 #define ECSP_RS_BUSY           0x11u /* operation busy (spec 3.6) */
+#define ECSP_RS_INVALID        0x13u /* precondition not met (spec 3.6, 5.2.9) */
+#define ECSP_RS_FAILED         0x20u /* execution failed (spec 3.6, 4.4) */
+#define ECSP_RS_ABORTED        0x21u /* host stopped a long-running command */
+
+/* Long-running control byte (spec 5.2.8, 5.2.12): payload is
+ * transaction sequence + this control. */
+#define ECSP_CTRL_START 0x00u
+#define ECSP_CTRL_STOP  0x01u
+#define ECSP_CTRL_LEN   1u
+
+/* Fault-word bit0 (spec table 5-3). The common layer has no other bit:
+ * a failed self-test sets it, a successful self-test clears it, and an
+ * in-flight long-running command that cannot be brought to a safe state
+ * sets it too (spec 4.4). bit5..bit7 stay untouched. */
+#define ECSP_FAULT_SELFTEST 0x01u
 
 /* Low-power mode values (spec 5.2.11). */
 #define ECSP_LOW_POWER_EXIT  0x00u
