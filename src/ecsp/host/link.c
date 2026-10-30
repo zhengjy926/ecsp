@@ -128,6 +128,23 @@ static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
     slot->txn_fallback = 0u;
     slot->txn_exec_max = 0u;
     slot->txn_result_ms = 0u;
+    /* Silence or dropout never delivered the reset answer, so the waiting
+     * command's outcome is unknown. A 0x00 answer reports that itself,
+     * before finish_txn, and clears the flag. A refusal (not 0x00) does
+     * not come through here: the wait is restored instead. */
+    if (slot->txn_abandon != 0u && status != ECSP_OK) {
+        ecsp_txn_cb_t old_cb = slot->abandon_cb;
+        void *old_user = slot->abandon_user;
+        uint8_t old_cmd = slot->abandon_cmd;
+
+        slot->txn_abandon = 0u;
+        slot->abandon_cb = NULL;
+        slot->abandon_user = NULL;
+        slot->abandon_cmd = 0u;
+        if (old_cb != NULL) {
+            old_cb(h, board, old_cmd, ECSP_E_RESET, 0u, NULL, 0u, old_user);
+        }
+    }
     if (cb != NULL) {
         cb(h, board, cmd, status, response_code, payload, len, user);
     }
@@ -227,10 +244,8 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
     if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
         return ECSP_E_STATE;
     }
-    /* spec 4.4: 0x07 during wait-result preempts that command. The reset is
-     * only queued here. The next step reports ECSP_E_RESET for the command
-     * that was waiting (outcome not assumed) and then transmits the reset.
-     * The callback stays on the step stack (ADR-0005). */
+    /* spec 4.4: 0x07 during wait-result is queued in place of that wait.
+     * The long-running callback stays pending until the reset is answered. */
     if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESULT &&
         cmd == (uint8_t)ECSP_CMD_SYSTEM_RESET) {
         slot->txn_abandon = 1u;
@@ -653,7 +668,53 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
         frame->payload_len >= 1u) {
         uint8_t event_cmd = 0u;
         uint8_t query_cmd = 0u;
-        int paired = long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd);
+        int paired;
+
+        /* spec 4.4: 0x00 means the in-flight command was stopped and the
+         * outcome must not be assumed. Anything else (0x20) refused the
+         * reset, so the wait continues and its result event may still come. */
+        if (slot->txn_abandon != 0u &&
+            frame->cmd == (uint8_t)ECSP_CMD_SYSTEM_RESET) {
+            uint8_t rs = frame->payload[0];
+            ecsp_txn_cb_t old_cb = slot->abandon_cb;
+            void *old_user = slot->abandon_user;
+            uint8_t old_cmd = slot->abandon_cmd;
+            uint16_t exec_max = slot->txn_exec_max;
+            uint32_t result_ms = slot->txn_result_ms;
+
+            slot->txn_abandon = 0u;
+            slot->abandon_cb = NULL;
+            slot->abandon_user = NULL;
+            slot->abandon_cmd = 0u;
+            if (rs == (uint8_t)ECSP_RS_OK) {
+                if (old_cb != NULL) {
+                    old_cb(h, slot->board_addr, old_cmd, ECSP_E_RESET,
+                           0u, NULL, 0u, old_user);
+                }
+                finish_txn(h, slot, ECSP_OK, rs, NULL, 0u);
+            } else {
+                ecsp_txn_cb_t reset_cb = slot->txn_cb;
+                void *reset_user = slot->txn_user;
+
+                if (reset_cb != NULL) {
+                    reset_cb(h, slot->board_addr, slot->txn_cmd, ECSP_OK,
+                             rs, NULL, 0u, reset_user);
+                }
+                slot->txn_cmd = old_cmd;
+                slot->txn_wire_cmd = old_cmd;
+                slot->txn_cb = old_cb;
+                slot->txn_user = old_user;
+                slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESULT;
+                slot->txn_exec_max = exec_max;
+                slot->txn_result_ms = result_ms;
+                slot->txn_fallback = 0u;
+                slot->txn_attempt = 0u;
+                slot->txn_len = 0u;
+            }
+            return;
+        }
+
+        paired = long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd);
 
         /* spec 4.3: 0x00 plus T_exec_max accepts the command and waits.
          * Any other answer is the end — there will be no result event. */
@@ -678,36 +739,6 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
         finish_txn(h, slot, ECSP_OK, frame->payload[0],
                    &frame->payload[1],
                    (uint16_t)(frame->payload_len - 1u));
-    }
-}
-
-/* The preempting 0x07 was queued by submit. Report the abandoned command
- * before that reset is transmitted, so the callback runs on this step. */
-static void fire_abandoned(ecsp_host_t *h)
-{
-    size_t i;
-
-    for (i = 0u; i < h->slave_count; i++) {
-        ecsp_host_slot_t *slot = &h->slots[i];
-        ecsp_txn_cb_t cb;
-        void *user;
-        uint8_t cmd;
-        uint8_t board;
-
-        if (slot->txn_abandon == 0u) {
-            continue;
-        }
-        cb = slot->abandon_cb;
-        user = slot->abandon_user;
-        cmd = slot->abandon_cmd;
-        board = slot->board_addr;
-        slot->txn_abandon = 0u;
-        slot->abandon_cb = NULL;
-        slot->abandon_user = NULL;
-        slot->abandon_cmd = 0u;
-        if (cb != NULL) {
-            cb(h, board, cmd, ECSP_E_RESET, 0u, NULL, 0u, user);
-        }
     }
 }
 
@@ -748,7 +779,6 @@ int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
     }
     h->in_step = 1u;
     pump_rx(h, now_ms);
-    fire_abandoned(h);
     for (i = 0u; i < h->slave_count; i++) {
         ecsp_host_slot_t *slot = &h->slots[i];
 

@@ -106,6 +106,14 @@ static int abort_ok(ecsp_slave_t *s, uint8_t cmd)
     return ECSP_OK;
 }
 
+static int abort_fail(ecsp_slave_t *s, uint8_t cmd)
+{
+    (void)s;
+    g_abort_calls++;
+    g_abort_cmd = cmd;
+    return ECSP_E_VAL;
+}
+
 static void on_txn(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                    int status, uint8_t response_code,
                    const uint8_t *payload, uint16_t len, void *user)
@@ -846,6 +854,41 @@ static void test_reset_during_long_run_does_not_assume_the_outcome(void)
     }
 }
 
+/* spec 4.4 step 4: if the safe-abort sequence fails, the reset is answered
+ * 0x20 and is not performed. The long-running command is still in wait. */
+static void test_unsafe_reset_leaves_the_long_run_waiting(void)
+{
+    uint8_t start[2];
+    uint8_t seq[1];
+    txn_rec_t *reset;
+
+    setup();
+    CHECK(bring_up());
+    ecsp_slave_set_safe_abort(&g_slave, abort_fail);
+
+    start[0] = 0x03u;
+    start[1] = (uint8_t)ECSP_CTRL_START;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_CONTROL_SELFTEST, start, 2u));
+    exchange(g_now);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, BOARD));
+
+    seq[0] = 0x04u;
+    g_auto_reset = 1;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SYSTEM_RESET, seq, 1u));
+    exchange(g_now);
+    CHECK_SPEC("spec 4.4", nth_txn(ECSP_CMD_CONTROL_SELFTEST, 0) == NULL);
+    CHECK_SPEC("spec 4.4",
+               ecsp_host_txn(&g_host, BOARD) == ECSP_TXN_WAIT_RESULT);
+    CHECK_SPEC("spec 4.4", g_result_events == 0);
+    CHECK_EQ(0, g_resets);
+    reset = nth_txn(ECSP_CMD_SYSTEM_RESET, 0);
+    CHECK(reset != NULL);
+    if (reset != NULL) {
+        CHECK_SPEC("spec 4.4", reset->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.7", reset->rs == (uint8_t)ECSP_RS_FAILED);
+    }
+}
+
 int main(void)
 {
     test_result_event_closes_the_long_run();
@@ -855,5 +898,6 @@ int main(void)
     test_split_frame_is_reassembled();
     test_restarted_slave_does_not_return_the_previous_answer();
     test_reset_during_long_run_does_not_assume_the_outcome();
+    test_unsafe_reset_leaves_the_long_run_waiting();
     return ecsp_test_report();
 }

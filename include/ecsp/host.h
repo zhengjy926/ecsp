@@ -23,8 +23,10 @@
  * callback yet (spec table 4-2, 4.3). The callback runs once when the result
  * event arrives, or when the get-result query that replaces a lost event
  * is answered. Submitting 0x07 while waiting only enqueues the reset.
- * The next step ends that transaction with ECSP_E_RESET — the outcome is
- * not assumed — and then sends the reset.
+ * The long-running callback stays pending until that reset is answered:
+ * 0x00 ends it with ECSP_E_RESET (the outcome is not assumed), and any
+ * other code — 0x20, the command could not be made safe — leaves the
+ * wait in place (spec 4.4).
  * A handshake report after the session exists starts a new probe
  * (spec 4.1.4, 4.4).
  */
