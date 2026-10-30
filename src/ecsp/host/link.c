@@ -6,6 +6,10 @@
 
 #include "ecsp/frame.h"
 
+#if ECSP_HOST_SLAVES > 255
+#error "submission-queue slot index is stored in a uint8_t"
+#endif
+
 /* Same command, including the first send, at most this many times (spec 6.2).
  * Not a config knob: the spec does not let a product change the retry count. */
 #define ECSP_HOST_ATTEMPTS 3u
@@ -83,8 +87,26 @@ static void note_rx(ecsp_host_slot_t *slot, uint32_t now_ms)
     slot->last_rx_valid = 1u;
 }
 
+/* Drop one slot from the submission queue. A slot that is not queued is
+ * left alone, so finish can call this for every ending transaction. */
+static void dequeue_submit(ecsp_host_t *h, const ecsp_host_slot_t *slot)
+{
+    size_t idx = (size_t)(slot - h->slots);
+    size_t i;
+    size_t w = 0u;
+
+    for (i = 0u; i < h->submit_n; i++) {
+        if (h->submit_q[i] != (uint8_t)idx) {
+            h->submit_q[w] = h->submit_q[i];
+            w++;
+        }
+    }
+    h->submit_n = (uint8_t)w;
+}
+
 /* Copy the callback out before clearing the slot: the callback may submit
- * the next transaction, and must not see the one that just finished. */
+ * the next transaction, and must not see the one that just finished.
+ * Unqueue before the callback, so a resubmit of this same slave stays queued. */
 static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
                        uint8_t response_code, const uint8_t *payload,
                        uint16_t len)
@@ -94,6 +116,7 @@ static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
     uint8_t cmd = slot->txn_cmd;
     uint8_t board = slot->board_addr;
 
+    dequeue_submit(h, slot);
     slot->txn_state = (uint8_t)ECSP_TXN_IDLE;
     slot->txn_cb = NULL;
     slot->txn_user = NULL;
@@ -142,6 +165,7 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
     h->tx_len = 0u;
     h->slave_count = cfg->slave_count;
     h->in_step = 0u;
+    h->submit_n = 0u;
     for (i = 0u; i < cfg->slave_count; i++) {
         ecsp_host_slot_t *slot = &h->slots[i];
 
@@ -201,10 +225,12 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
     slot->txn_cb = cb;
     slot->txn_user = user;
     slot->txn_attempt = 0u;
-    /* A submit from inside step only enqueues. The next step sends it
-     * (ADR-0005). */
+    /* A submit from inside step only enqueues. The next step sends it,
+     * and several of them leave in the order they were submitted (ADR-0005). */
     slot->txn_defer = (h->in_step != 0u) ? 1u : 0u;
     slot->txn_state = (uint8_t)ECSP_TXN_QUEUED;
+    h->submit_q[h->submit_n] = (uint8_t)(slot - h->slots);
+    h->submit_n++;
     return ECSP_OK;
 }
 
@@ -294,41 +320,75 @@ static void fail_txn_link(ecsp_host_t *h, ecsp_host_slot_t *slot)
     report_event(h, slot, ECSP_HOST_EV_LINK_FAULT);
 }
 
-/* Table 4-2: a queued request is sent; a waiting one is retried up to three
- * times with the original payload (so the transaction sequence is unchanged).
- * Exhausting the attempts drops the session, then the transaction goes idle. */
-static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+/* One copy of this transaction into the transmit FIFO (spec 6.2). Returns 1
+ * after the attempt count and send time advance. Returns 0 when the FIFO
+ * cannot hold the frame; the transaction is already finished. */
+static int transmit_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
 {
     const uint8_t *payload;
-
-    if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
-        return;
-    }
-    if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP) {
-        if (!deadline_reached(slot->txn_sent_ms, now_ms,
-                              response_limit(slot->txn_cmd))) {
-            return;
-        }
-        if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {
-            slot->session = (uint8_t)ECSP_SESS_OFFLINE;
-            slot->phase = (uint8_t)PHASE_DONE;
-            finish_txn(h, slot, ECSP_E_TIMEOUT, 0u, NULL, 0u);
-            report_event(h, slot, ECSP_HOST_EV_OFFLINE);
-            return;
-        }
-    } else if (slot->txn_state != (uint8_t)ECSP_TXN_QUEUED ||
-               slot->txn_defer != 0u) {
-        return;
-    }
 
     payload = (slot->txn_len > 0u) ? slot->txn_payload : NULL;
     if (!queue_frame(h, slot->board_addr, slot->txn_cmd, payload, slot->txn_len)) {
         fail_txn_link(h, slot);
-        return;
+        return 0;
     }
     slot->txn_attempt++;
     slot->txn_sent_ms = now_ms;
-    slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESP;
+    return 1;
+}
+
+/* Table 4-2: a waiting request is retried up to three times with the original
+ * payload (so the transaction sequence is unchanged). Exhausting the attempts
+ * drops the session, then the transaction goes idle. The first send is not
+ * done here: emit_queued walks the submission queue so callback submits leave
+ * in the order they were handed in. */
+static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms)
+{
+    if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
+        return;
+    }
+    if (slot->txn_state != (uint8_t)ECSP_TXN_WAIT_RESP) {
+        return;
+    }
+    if (!deadline_reached(slot->txn_sent_ms, now_ms,
+                          response_limit(slot->txn_cmd))) {
+        return;
+    }
+    if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {
+        slot->session = (uint8_t)ECSP_SESS_OFFLINE;
+        slot->phase = (uint8_t)PHASE_DONE;
+        finish_txn(h, slot, ECSP_E_TIMEOUT, 0u, NULL, 0u);
+        report_event(h, slot, ECSP_HOST_EV_OFFLINE);
+        return;
+    }
+
+    (void)transmit_txn(h, slot, now_ms);
+}
+
+/* First transmission of each queued submit, oldest first. A submit made while
+ * this step is on the stack stays deferred until the next step. */
+static void emit_queued(ecsp_host_t *h, uint32_t now_ms)
+{
+    size_t i = 0u;
+
+    while (i < h->submit_n) {
+        ecsp_host_slot_t *slot = &h->slots[h->submit_q[i]];
+
+        if (slot->txn_state != (uint8_t)ECSP_TXN_QUEUED) {
+            dequeue_submit(h, slot);
+            continue;
+        }
+        if (slot->txn_defer != 0u ||
+            slot->session != (uint8_t)ECSP_SESS_NORMAL) {
+            i++;
+            continue;
+        }
+        if (!transmit_txn(h, slot, now_ms)) {
+            continue;
+        }
+        slot->txn_state = (uint8_t)ECSP_TXN_WAIT_RESP;
+        dequeue_submit(h, slot);
+    }
 }
 
 /* spec 7.2.1: three heartbeat periods with no valid frame from this slave. */
@@ -491,12 +551,17 @@ static void pump_rx(ecsp_host_t *h, uint32_t now_ms)
     }
 }
 
-void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
+int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
 {
     size_t i;
 
-    if (h == NULL || h->in_step != 0u) {
-        return;
+    if (h == NULL) {
+        return ECSP_E_ARG;
+    }
+    /* A callback is on this stack. Do not advance, and do not touch the
+     * retry count (ADR-0005). A different host has its own flag. */
+    if (h->in_step != 0u) {
+        return ECSP_E_REENT;
     }
     h->in_step = 1u;
     pump_rx(h, now_ms);
@@ -509,10 +574,12 @@ void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
         progress_bringup(h, slot, now_ms);
         progress_txn(h, slot, now_ms);
     }
+    emit_queued(h, now_ms);
     for (i = 0u; i < h->slave_count; i++) {
         h->slots[i].txn_defer = 0u;
     }
     h->in_step = 0u;
+    return ECSP_OK;
 }
 
 void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len)

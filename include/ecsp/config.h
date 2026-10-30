@@ -103,8 +103,10 @@ enum {
     ECSP_E_TIMEOUT = -6, /* the allowed attempts got no answer (spec 6.2) */
     ECSP_E_OFFLINE = -7, /* the session dropped out; an in-flight transaction
                           * was cancelled (spec 7.2.1) */
-    ECSP_E_LINK    = -8  /* the frame would not fit in the transmit FIFO
+    ECSP_E_LINK    = -8, /* the frame would not fit in the transmit FIFO
                           * (spec 6.2); the peer was not judged silent */
+    ECSP_E_REENT   = -9  /* ecsp_host_step called again from its own stack
+                          * (ADR-0005); the call changes nothing */
 };
 
 #endif /* ECSP_CONFIG_H */

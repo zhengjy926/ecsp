@@ -9,6 +9,16 @@
  *    communication, and refused with an empty FIFO otherwise;
  *  - the event callback: three silent probes are reported once.
  *
+ * Ticket #11, still on that public host API:
+ *  - the transaction callback has run when ecsp_host_step returns, once
+ *    for an answer (timeout and dropout are already asserted below);
+ *  - two submits from that callback leave on the next step, in the order
+ *    they were submitted, and not on the step that delivered the callback;
+ *  - ecsp_host_step from that callback returns ECSP_E_REENT, and the waiting
+ *    transaction still has its original retries left;
+ *  - a second host context keeps its own FIFO and can be stepped from the
+ *    first host's callback.
+ *
  * Expected frames are the golden vectors (spec 5.2.1, 5.2.2, 5.2.18), not
  * bytes recomputed by the encoder under test. Timeouts use the spec's
  * numbers: 100 ms for a handshake answer (table 7-1 has no special-session
@@ -67,6 +77,20 @@ static const uint8_t version_bad[] = {
 static const uint8_t fault_query_req[] = {
     0xFA, 0x09, 0x00, 0x03, 0x12, 0x02, 0x85, 0x60, 0x0D
 };
+/* spec 5.2.18 answer, board 0x02: response 0x00 and fault word 0x01.
+ * CRC16-MODBUS over 0B 00 03 12 02 00 01 is 0xB880. */
+static const uint8_t fault_ans[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x12, 0x02, 0x00, 0x01, 0x80, 0xB8, 0x0D
+};
+/* spec 5.2.18 request, board 0x03. CRC16-MODBUS over 09 00 03 12 03 is 0xA044. */
+static const uint8_t fault_req_b3[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x12, 0x03, 0x44, 0xA0, 0x0D
+};
+/* Same answer as fault_ans, addressed to board 0x03.
+ * CRC16-MODBUS over 0B 00 03 12 03 00 01 is 0x78D1. */
+static const uint8_t fault_ans_b3[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x12, 0x03, 0x00, 0x01, 0xD1, 0x78, 0x0D
+};
 
 static uint8_t g_rx[ECSP_MAX_FRAME];
 static uint8_t g_tx[2u * ECSP_MAX_FRAME];
@@ -83,8 +107,19 @@ static uint8_t g_event_board;
 static int g_txn_calls;
 static int g_txn_status;
 static uint8_t g_txn_cmd;
+static uint8_t g_txn_rs;
+static uint16_t g_txn_len;
+static uint8_t g_txn_byte;
 static int g_txn_user_got;
 static int g_txn_marker;
+static int g_chain;
+static int g_reenter_rc;
+static int g_peer_rc;
+static int g_snap_once;
+static ecsp_session_t g_snap_sess;
+static ecsp_txn_state_t g_snap_txn;
+static size_t g_snap_tx;
+static ecsp_host_t *g_peer;
 
 /* spec 5.2.7 reset request, transaction sequence 0x01. Retries must be
  * these same bytes (spec 4.2: a retransmission reuses the sequence). */
@@ -125,7 +160,81 @@ static void on_txn(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
     g_txn_calls++;
     g_txn_status = status;
     g_txn_cmd = cmd;
+    g_txn_rs = response_code;
+    g_txn_len = len;
+    g_txn_byte = (payload != NULL && len > 0u) ? payload[0] : 0u;
     g_txn_user_got = (user == &g_txn_marker) ? 1 : 0;
+}
+
+/* The completing transaction's callback submits board 0x03, then board 0x02.
+ * Slot order is the other way round, so a FIFO that follows the slot array
+ * fails this. */
+static void on_txn_chain(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
+                         int status, uint8_t response_code,
+                         const uint8_t *payload, uint16_t len, void *user)
+{
+    (void)board_addr;
+    (void)cmd;
+    (void)response_code;
+    (void)payload;
+    (void)len;
+    (void)user;
+    g_txn_calls++;
+    g_txn_status = status;
+    if (g_chain == 0) {
+        return;
+    }
+    g_chain = 0;
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(h, 0x03u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, NULL, NULL));
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(h, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, NULL, NULL));
+}
+
+/* now 200 is the first retry instant of a reset sent at 100. A step that
+ * actually ran would put that retry on the FIFO. */
+static void on_txn_reenter(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
+                           int status, uint8_t response_code,
+                           const uint8_t *payload, uint16_t len, void *user)
+{
+    (void)board_addr;
+    (void)cmd;
+    (void)status;
+    (void)response_code;
+    (void)payload;
+    (void)len;
+    (void)user;
+    g_txn_calls++;
+    if (g_snap_once != 0) {
+        return;
+    }
+    g_snap_once = 1;
+    g_reenter_rc = ecsp_host_step(h, 200u);
+    g_snap_sess = ecsp_host_session(h, 0x02u);
+    g_snap_txn = ecsp_host_txn(h, 0x02u);
+    g_snap_tx = ecsp_host_tx_pending(h);
+}
+
+static void on_txn_peer(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
+                        int status, uint8_t response_code,
+                        const uint8_t *payload, uint16_t len, void *user)
+{
+    (void)board_addr;
+    (void)cmd;
+    (void)status;
+    (void)response_code;
+    (void)payload;
+    (void)len;
+    (void)user;
+    g_txn_calls++;
+    if (g_snap_once != 0) {
+        return;
+    }
+    g_snap_once = 1;
+    g_peer_rc = ecsp_host_step(g_peer, 0u);
+    g_snap_sess = ecsp_host_session(h, 0x02u);
+    g_snap_txn = ecsp_host_txn(h, 0x02u);
+    g_snap_tx = ecsp_host_tx_pending(h);
 }
 
 static void on_event(ecsp_host_t *h, uint8_t board_addr, ecsp_host_event_t event,
@@ -160,7 +269,7 @@ static void init_host(ecsp_host_event_cb_t on_event_fn, void *user)
 
 static void step_at(uint32_t now_ms)
 {
-    ecsp_host_step(&g_host, now_ms);
+    CHECK_EQ(ECSP_OK, ecsp_host_step(&g_host, now_ms));
 }
 
 static void drain_all(void)
@@ -665,6 +774,253 @@ static void test_one_slave_dropping_leaves_the_other_usable(void)
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
 }
 
+static void reach_two_normal(void)
+{
+    uint8_t both_hs[sizeof handshake_req + sizeof hs_req_b3];
+    uint8_t both_ver[sizeof version_req + sizeof ver_req_b3];
+
+    init_two();
+    memcpy(both_hs, handshake_req, sizeof handshake_req);
+    memcpy(both_hs + sizeof handshake_req, hs_req_b3, sizeof hs_req_b3);
+    memcpy(both_ver, version_req, sizeof version_req);
+    memcpy(both_ver + sizeof version_req, ver_req_b3, sizeof ver_req_b3);
+
+    step_at(0u);
+    expect_bytes(both_hs, sizeof both_hs);
+    ecsp_host_rx(&g_host, handshake_resp, sizeof handshake_resp);
+    ecsp_host_rx(&g_host, hs_resp_b3, sizeof hs_resp_b3);
+    step_at(10u);
+    expect_bytes(both_ver, sizeof both_ver);
+    ecsp_host_rx(&g_host, version_ok, sizeof version_ok);
+    ecsp_host_rx(&g_host, ver_resp_b3, sizeof ver_resp_b3);
+    step_at(20u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x03u));
+}
+
+/* An answer runs the callback before step returns, once, with the fault
+ * byte and without the response code. A later step does not call it again.
+ * Timeout and dropout already assert the other two once-only endings. */
+static void test_answer_invokes_callback_once_before_step_returns(void)
+{
+    g_txn_calls = 0;
+    g_txn_user_got = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, on_txn, &g_txn_marker));
+    step_at(30u);
+    expect_bytes(fault_query_req, sizeof fault_query_req);
+    CHECK_EQ(0, g_txn_calls);
+
+    ecsp_host_rx(&g_host, fault_ans, sizeof fault_ans);
+    step_at(40u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_GET_FAULT, g_txn_cmd);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(1, g_txn_len);
+    CHECK_EQ(0x01, g_txn_byte);
+    CHECK_EQ(1, g_txn_user_got);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(50u);
+    CHECK_EQ(1, g_txn_calls);
+}
+
+/* Two submits inside the callback stay queued through that step. The next
+ * step emits board 0x03's query and then board 0x02's reset: submit order,
+ * not slot-array order. */
+static void test_callback_submits_leave_in_submit_order(void)
+{
+    uint8_t want[sizeof fault_req_b3 + sizeof reset_req];
+
+    g_txn_calls = 0;
+    g_chain = 0;
+    reach_two_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, on_txn_chain, NULL));
+    step_at(100u);
+    expect_bytes(fault_query_req, sizeof fault_query_req);
+
+    g_chain = 1;
+    ecsp_host_rx(&g_host, fault_ans, sizeof fault_ans);
+    step_at(110u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_QUEUED, ecsp_host_txn(&g_host, 0x03u));
+    CHECK_EQ(ECSP_TXN_QUEUED, ecsp_host_txn(&g_host, 0x02u));
+
+    memcpy(want, fault_req_b3, sizeof fault_req_b3);
+    memcpy(want + sizeof fault_req_b3, reset_req, sizeof reset_req);
+    step_at(110u);
+    expect_bytes(want, sizeof want);
+}
+
+/* Stepping the same host from the callback is refused. The reset that is
+ * already waiting keeps the retries it had: the original deadline still
+ * produces the second and third copies, and only then times out once. */
+static void test_reentering_step_does_not_spend_a_retry(void)
+{
+    g_txn_calls = 0;
+    g_snap_once = 0;
+    g_reenter_rc = 0;
+    reach_two_normal();
+
+    CHECK_EQ(ECSP_E_ARG, ecsp_host_step(NULL, 0u));
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, on_txn, &g_txn_marker));
+    step_at(100u);
+    expect_bytes(reset_req, sizeof reset_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x03u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, on_txn_reenter, NULL));
+    step_at(100u);
+    expect_bytes(fault_req_b3, sizeof fault_req_b3);
+
+    g_txn_calls = 0;
+    ecsp_host_rx(&g_host, fault_ans_b3, sizeof fault_ans_b3);
+    step_at(110u);
+    CHECK_EQ(ECSP_E_REENT, g_reenter_rc);
+    CHECK_EQ(ECSP_SESS_NORMAL, g_snap_sess);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, g_snap_txn);
+    CHECK_EQ(0u, g_snap_tx);
+    CHECK_EQ(1, g_txn_calls);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(200u);
+    expect_bytes(reset_req, sizeof reset_req);
+    step_at(300u);
+    expect_bytes(reset_req, sizeof reset_req);
+    CHECK_EQ(1, g_txn_calls);
+
+    step_at(400u);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(2, g_txn_calls);
+    CHECK_EQ(ECSP_E_TIMEOUT, g_txn_status);
+    CHECK_EQ(1, g_txn_user_got);
+}
+
+/* The reentrancy flag belongs to one context. Stepping a second host from
+ * the callback brings that host up and does not touch the first host's
+ * in-flight reset. */
+static void test_callback_steps_a_different_host(void)
+{
+    ecsp_host_t peer;
+    ecsp_host_slave_cfg_t slave;
+    ecsp_host_cfg_t cfg;
+    uint8_t rx[ECSP_MAX_FRAME];
+    uint8_t tx[32];
+    static const uint8_t expect[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    g_txn_calls = 0;
+    g_snap_once = 0;
+    g_peer_rc = 0;
+    reach_two_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, on_txn, NULL));
+    step_at(100u);
+    expect_bytes(reset_req, sizeof reset_req);
+
+    memcpy(slave.expect_version.b, expect, 7u);
+    slave.board_addr = 0x02u;
+    cfg.product_addr = 0x03u;
+    cfg.slaves = &slave;
+    cfg.slave_count = 1u;
+    cfg.rx_buf = rx;
+    cfg.rx_cap = sizeof rx;
+    cfg.tx_buf = tx;
+    cfg.tx_cap = sizeof tx;
+    cfg.on_event = NULL;
+    cfg.user = NULL;
+    CHECK_EQ(ECSP_OK, ecsp_host_init(&peer, &cfg));
+    g_peer = &peer;
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x03u, ECSP_CMD_GET_FAULT,
+                                      NULL, 0u, on_txn_peer, NULL));
+    step_at(100u);
+    expect_bytes(fault_req_b3, sizeof fault_req_b3);
+
+    ecsp_host_rx(&g_host, fault_ans_b3, sizeof fault_ans_b3);
+    step_at(110u);
+    CHECK_EQ(ECSP_OK, g_peer_rc);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_MEM(handshake_req, sizeof handshake_req, tx,
+              ecsp_host_tx_pending(&peer));
+    CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&peer, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, g_snap_sess);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, g_snap_txn);
+    CHECK_EQ(0u, g_snap_tx);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    g_peer = NULL;
+}
+
+/* Two contexts in one process: stepping one does not write the other's
+ * FIFO or move its session. */
+static void test_two_hosts_keep_separate_fifos(void)
+{
+    ecsp_host_t a;
+    ecsp_host_t b;
+    ecsp_host_slave_cfg_t sa;
+    ecsp_host_slave_cfg_t sb;
+    ecsp_host_cfg_t ca;
+    ecsp_host_cfg_t cb;
+    uint8_t rx_a[ECSP_MAX_FRAME];
+    uint8_t tx_a[32];
+    uint8_t rx_b[ECSP_MAX_FRAME];
+    uint8_t tx_b[32];
+    static const uint8_t expect[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    memcpy(sa.expect_version.b, expect, 7u);
+    memcpy(sb.expect_version.b, expect, 7u);
+    sa.board_addr = 0x02u;
+    sb.board_addr = 0x02u;
+
+    ca.product_addr = 0x03u;
+    ca.slaves = &sa;
+    ca.slave_count = 1u;
+    ca.rx_buf = rx_a;
+    ca.rx_cap = sizeof rx_a;
+    ca.tx_buf = tx_a;
+    ca.tx_cap = sizeof tx_a;
+    ca.on_event = NULL;
+    ca.user = NULL;
+
+    cb.product_addr = 0x03u;
+    cb.slaves = &sb;
+    cb.slave_count = 1u;
+    cb.rx_buf = rx_b;
+    cb.rx_cap = sizeof rx_b;
+    cb.tx_buf = tx_b;
+    cb.tx_cap = sizeof tx_b;
+    cb.on_event = NULL;
+    cb.user = NULL;
+
+    CHECK_EQ(ECSP_OK, ecsp_host_init(&a, &ca));
+    CHECK_EQ(ECSP_OK, ecsp_host_init(&b, &cb));
+    CHECK_EQ(ECSP_OK, ecsp_host_step(&a, 0u));
+    CHECK_MEM(handshake_req, sizeof handshake_req, tx_a, ecsp_host_tx_pending(&a));
+    CHECK_EQ(0u, ecsp_host_tx_pending(&b));
+
+    CHECK_EQ(ECSP_OK, ecsp_host_step(&b, 0u));
+    CHECK_MEM(handshake_req, sizeof handshake_req, tx_a, ecsp_host_tx_pending(&a));
+    CHECK_MEM(handshake_req, sizeof handshake_req, tx_b, ecsp_host_tx_pending(&b));
+    CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&a, 0x02u));
+    CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&b, 0x02u));
+}
+
 int main(void)
 {
     test_first_step_sends_handshake_request();
@@ -683,5 +1039,10 @@ int main(void)
     test_late_slave_report_restarts_the_probe();
     test_passive_wait_past_setup_window_goes_offline();
     test_one_slave_dropping_leaves_the_other_usable();
+    test_answer_invokes_callback_once_before_step_returns();
+    test_callback_submits_leave_in_submit_order();
+    test_reentering_step_does_not_spend_a_retry();
+    test_callback_steps_a_different_host();
+    test_two_hosts_keep_separate_fifos();
     return ecsp_test_report();
 }

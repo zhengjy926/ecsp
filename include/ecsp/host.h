@@ -12,6 +12,11 @@
  * a submit is refused locally. Three unanswered probes return the session to
  * disconnected and report the failure. The caller pushes time and drains the
  * transmit FIFO; the library never reads a clock.
+ *
+ * Ticket #11: the transaction callback runs on this host's step stack, once.
+ * It may submit; the next step sends those requests in submission order. It
+ * must not step this same host (ECSP_E_REENT, and nothing moves). A second
+ * host context may be stepped from the callback.
  */
 
 #include <stddef.h>
@@ -62,7 +67,8 @@ typedef void (*ecsp_host_event_cb_t)(ecsp_host_t *h, uint8_t board_addr,
  * ends. `status` is ECSP_OK when an answer arrived (`response_code` and
  * `payload` are that answer, payload excluding the response code). A silence
  * limit passes ECSP_E_TIMEOUT, heartbeat dropout passes ECSP_E_OFFLINE, and a
- * full transmit FIFO passes ECSP_E_LINK. */
+ * full transmit FIFO passes ECSP_E_LINK. The callback may submit; it must
+ * not call ecsp_host_step on this same host. */
 typedef void (*ecsp_txn_cb_t)(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                               int status, uint8_t response_code,
                               const uint8_t *payload, uint16_t len, void *user);
@@ -118,7 +124,9 @@ struct ecsp_host {
     size_t rx_len;
     size_t tx_len;
     size_t slave_count;
-    uint8_t in_step;
+    uint8_t in_step; /* 1 while ecsp_host_step is on the stack */
+    uint8_t submit_n; /* queued submits not yet handed to the FIFO */
+    uint8_t submit_q[ECSP_HOST_SLAVES]; /* slot indexes, oldest submit first */
     ecsp_host_slot_t slots[ECSP_HOST_SLAVES];
 };
 
@@ -128,7 +136,7 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                      const uint8_t *payload, uint16_t len,
                      ecsp_txn_cb_t cb, void *user);
 
-void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
+int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
 
 void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len);
 

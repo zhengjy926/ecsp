@@ -293,7 +293,7 @@ int  ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg);
 int  ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                       const uint8_t *payload, uint16_t len,
                       ecsp_txn_cb_t cb, void *user);
-void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
+int  ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
 void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len);
 ecsp_session_t ecsp_host_session(const ecsp_host_t *h, uint8_t board_addr);
 ecsp_txn_state_t ecsp_host_txn(const ecsp_host_t *h, uint8_t board_addr);
@@ -301,17 +301,17 @@ size_t ecsp_host_tx_pending(const ecsp_host_t *h);
 void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 ```
 
-`ecsp_host_submit` 在会话不是“正常通信”时返回 `ECSP_E_STATE`，不入队、不发帧。会话为“正常通信”且当前事务空闲时，把业务命令标为“待发送”；下一拍 `ecsp_host_step` 才写入发送 FIFO 并进入“等待应答”。同一从机同时只保留一个在途事务，第二个 `submit` 返回 `ECSP_E_CAP`。事务在途时会话状态保持“正常通信”。`cb` 在事务结束时于 step 栈上调用恰好一次：应答到达为 `ECSP_OK`（`payload` 不含应答码），重发耗尽为 `ECSP_E_TIMEOUT`，心跳掉线取消在途事务为 `ECSP_E_OFFLINE`，发送 FIFO 装不下为 `ECSP_E_LINK`。step 进行中提交的请求留到下一次 step 再发。
+`ecsp_host_submit` 在会话不是“正常通信”时返回 `ECSP_E_STATE`，不入队、不发帧。会话为“正常通信”且当前事务空闲时，把业务命令标为“待发送”；下一拍 `ecsp_host_step` 才写入发送 FIFO 并进入“等待应答”。同一从机同时只保留一个在途事务，第二个 `submit` 返回 `ECSP_E_CAP`。事务在途时会话状态保持“正常通信”。`cb` 在事务结束时于 step 栈上调用恰好一次：应答到达为 `ECSP_OK`（`payload` 不含应答码），重发耗尽为 `ECSP_E_TIMEOUT`，心跳掉线取消在途事务为 `ECSP_E_OFFLINE`，发送 FIFO 装不下为 `ECSP_E_LINK`。step 进行中提交的请求留到下一次 step 再发，多台从机按提交先后写入发送 FIFO。
 
 **上电与掉线（#9、#10）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限 `ECSP_RESP_HANDSHAKE_MS`，含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”并上报 `ECSP_HOST_EV_PROBE_FAILED`，进入被动等待：收到该从机的空载荷 0x01 上报后，同一拍重新下发握手请求。自第一次 step 起超过 `ECSP_SESSION_SETUP_MS` 仍未进入“正常通信”或“版本不符”，会话改为“掉线”并上报 `ECSP_HOST_EV_OFFLINE`。应答码不是 0x00 则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT`。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 三次无应答回到“未连接”并上报失败。版本 7 字节相等进入“正常通信”，不相等停在“版本不符”。进入“正常通信”后，业务命令按表 7-1 的时限重发，含初发最多 3 次，重发复用提交时的载荷（事务序号不变）；次数用尽则会话“掉线”、事务回“空闲”。连续 `3 * ECSP_HEARTBEAT_MS` 未收到该从机任何有效帧同样“掉线”；若当时有在途事务，回调只触发这一次，不再另发一帧重试。掉线后业务命令被本地拒绝。收到握手上报才重新探测，版本核对通过后才回到“正常通信”。一台从机掉线不影响其它槽位。
 
-**回调语义**（ADR-0005）：
+**回调语义**（ADR-0005，#11）：
 
-* 回调在 `ecsp_host_step` 的调用栈上同步执行，每个事务恰好一次；
-* 回调内**允许** `ecsp_host_submit`（只入队，不推进状态机）；
-* 回调内**禁止**再次调用 `ecsp_host_step`（重入检测：置标志并返回 `ECSP_E_REENT`）。
+* 回调在 `ecsp_host_step` 的调用栈上同步执行，每个事务恰好一次（成功、超时、掉线都只这一次）；
+* 回调内**允许** `ecsp_host_submit`（只入队，不推进状态机）；同一回调里提交的多条请求，下一次 step 按提交顺序发出；
+* 回调内**禁止**再次调用同一个主机的 `ecsp_host_step`：返回 `ECSP_E_REENT`，不推进，会话状态与重发计数都不变。另一个主机上下文不共享这面标志，回调里仍可推进它。
 
-事务回调已经按上面的规则交付一次。`ECSP_E_REENT` 尚未实现：step 重入时直接返回，不推进，也不改状态。
+`ecsp_host_step` 正常返回 `ECSP_OK`。`h` 为 NULL 时返回 `ECSP_E_ARG`。
 
 **上电流程**（规范 4.1.1）：主动握手探测 3 次 → 失败则被动等待上报 → 收到 0x01 重入探测 → 超过会话建立总时限按掉线处理；握手成功后取版本并逐字节比较，不等则停在 `版本不符`。
 
