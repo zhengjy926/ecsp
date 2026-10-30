@@ -41,6 +41,18 @@
 #define ECSP_HEARTBEAT_MS 1000u
 #endif
 
+/* Host answer deadlines (spec 7.1, table 7-4: a product may only loosen
+ * these, and the host times out at the declared value). Table 7-1 has no
+ * row for the special-session class, so a handshake answer waits the
+ * action-class ceiling. Get-version is a query. */
+#ifndef ECSP_RESP_HANDSHAKE_MS
+#define ECSP_RESP_HANDSHAKE_MS 100u
+#endif
+
+#ifndef ECSP_RESP_QUERY_MS
+#define ECSP_RESP_QUERY_MS 50u
+#endif
+
 /* Long-running accept field T_exec_max, milliseconds, uint16 little-endian
  * (spec 4.3, 5.2.8, 5.2.12). These are the recommended ceilings; a product
  * overrides them and declares the value in its product spec. Reaching the
@@ -68,7 +80,10 @@ enum {
     ECSP_E_ARG  = -1,  /* invalid argument or configuration */
     ECSP_E_LEN  = -2,  /* payload length does not match the command (-> 0x02) */
     ECSP_E_VAL  = -3,  /* payload length is right but the value is illegal (-> 0x03) */
-    ECSP_E_CAP  = -4   /* a destination buffer is too small for the data */
+    ECSP_E_CAP   = -4, /* a destination buffer is too small for the data */
+    ECSP_E_STATE = -5  /* session is not in normal communication, so a
+                        * business command is refused locally and no frame
+                        * is queued (spec 4.1.1, 9.2) */
 };
 
 #endif /* ECSP_CONFIG_H */

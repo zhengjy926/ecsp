@@ -78,6 +78,8 @@ CMakeLists.txt             只用于本机测试，库源码不依赖 CMake
 | `ECSP_SLAVE_TXN_CACHE` | 4 | 事务缓存条目数（每条目约占 `ECSP_MAX_FRAME` + 4 字节上下文 RAM）；0 表示关闭去重（不推荐） |
 | `ECSP_HOST_SLAVES` | 8 | 每个主机上下文可管理的从机槽位数 |
 | `ECSP_HEARTBEAT_MS` | 1000 | 就绪后 0x10 心跳的周期，规范允许 ±10%；产品覆盖时须同步调整掉线门限（规范 5.2.16、7.2.1）。等待握手时的 0x01 上报由规范 4.1.2 固定为 1 Hz，没有对应宏 |
+| `ECSP_RESP_HANDSHAKE_MS` | 100 | 主机等待握手应答的时限。表 7-1 没有特殊会话类一行，故取动作类上限；产品只允许放宽（表 7-4） |
+| `ECSP_RESP_QUERY_MS` | 50 | 主机等待获取类应答的时限（规范 7.1），版本核对的 0x02 用它。产品只允许放宽 |
 
 ## 4 L1 帧层
 
@@ -237,9 +239,44 @@ int     ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result);
 * **事务状态**：`空闲 / 待发送 / 等待应答 / 等待结果`（表 4-2），同一从机同时至多一个在途事务。
 
 ```c
+typedef enum {
+    ECSP_SESS_DISCONNECTED = 0,
+    ECSP_SESS_HANDSHAKING,
+    ECSP_SESS_HANDSHAKEN,
+    ECSP_SESS_NORMAL,
+    ECSP_SESS_VERSION_MISMATCH,
+    ECSP_SESS_OFFLINE
+} ecsp_session_t;
+
+typedef enum {
+    ECSP_HOST_EV_PROBE_FAILED = 1, /* 三次握手或三次取版本仍无应答 */
+    ECSP_HOST_EV_VERSION_MISMATCH,
+    ECSP_HOST_EV_REJECTED,         /* 对端已应答，但应答码不是 0x00；不按超时重发（表 6-1） */
+    ECSP_HOST_EV_LINK_FAULT        /* 整帧放不进发送 FIFO（规范 6.2），与“无应答”分开报 */
+} ecsp_host_event_t;
+
+typedef void (*ecsp_host_event_cb_t)(ecsp_host_t *h, uint8_t board_addr,
+                                     ecsp_host_event_t event, void *user);
 typedef void (*ecsp_txn_cb_t)(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                               uint8_t response_code, const uint8_t *payload,
                               uint16_t len, void *user);
+
+typedef struct {
+    uint8_t        board_addr;
+    ecsp_version_t expect_version; /* 固化的 7 字节期望版本，规范 9.2 */
+} ecsp_host_slave_cfg_t;
+
+typedef struct {
+    uint8_t product_addr;
+    const ecsp_host_slave_cfg_t *slaves;
+    size_t slave_count;            /* 不超过 ECSP_HOST_SLAVES */
+    uint8_t *rx_buf;
+    size_t   rx_cap;               /* 至少 ECSP_MAX_FRAME */
+    uint8_t *tx_buf;
+    size_t   tx_cap;               /* 至少一帧最小帧；装不下的业务帧在 submit 返回 ECSP_E_CAP */
+    ecsp_host_event_cb_t on_event; /* 可为 NULL */
+    void *user;
+} ecsp_host_cfg_t;
 
 int  ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg);
 int  ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
@@ -247,7 +284,14 @@ int  ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                       ecsp_txn_cb_t cb, void *user);
 void ecsp_host_step(ecsp_host_t *h, uint32_t now_ms);
 void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len);
+ecsp_session_t ecsp_host_session(const ecsp_host_t *h, uint8_t board_addr);
+size_t ecsp_host_tx_pending(const ecsp_host_t *h);
+void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 ```
+
+`ecsp_host_submit` 在会话不是“正常通信”时返回 `ECSP_E_STATE`，不入队、不发帧。会话为“正常通信”时只把业务命令入队，下一拍 `ecsp_host_step` 才写入发送 FIFO。`cb` 与 `user` 的保存和交付属于后续票据；本切片接受这两个参数，但不保留。
+
+**上电（#9 已落地）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限 `ECSP_RESP_HANDSHAKE_MS`，含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”，`on_event` 上报 `ECSP_HOST_EV_PROBE_FAILED` 一次，不再自动重开探测。应答码不是 0x00（表 6-1 的 0x01、0x02 等）则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT` 并回到“未连接”，不停在“握手中”。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 按获取类时限重发，三次无应答同样回到“未连接”并上报失败。0x00 且 7 字节与 `expect_version` 逐字节相等则进入“正常通信”；不相等则停在“版本不符”并上报 `ECSP_HOST_EV_VERSION_MISMATCH`，此后业务命令本地拒绝。握手上报帧（空载荷的 0x01）不是握手应答。被动等待上报、掉线与事务重发不在本切片。
 
 **回调语义**（ADR-0005）：
 
@@ -255,7 +299,9 @@ void ecsp_host_rx(ecsp_host_t *h, const uint8_t *data, size_t len);
 * 回调内**允许** `ecsp_host_submit`（只入队，不推进状态机）；
 * 回调内**禁止**再次调用 `ecsp_host_step`（重入检测：置标志并返回 `ECSP_E_REENT`）。
 
-**上电流程**（规范 4.1.1）：主动握手探测 3 次 → 失败则被动等待上报 → 收到 0x01 重入探测 → 超过会话建立总时限按掉线处理；握手成功后取版本并逐字节比较，不等则停在 `版本不符`。
+事务回调的一次交付和 `ECSP_E_REENT` 尚未实现。当前事件回调已经在 step 栈上同步执行；step 重入时直接返回，不推进。
+
+**上电流程**（规范 4.1.1）：主动握手探测 3 次 → 失败则被动等待上报 → 收到 0x01 重入探测 → 超过会话建立总时限按掉线处理；握手成功后取版本并逐字节比较，不等则停在 `版本不符`。被动等待与掉线由后续票据补上；#9 在三次探测失败时先回到“未连接”并上报，见上文。
 
 **重发**：同一事务超时重发，含初发共 3 次，`attempt` 与 deadline 挂在事务上而非状态上；重发复用原事务序号。
 
