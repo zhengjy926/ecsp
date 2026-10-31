@@ -97,6 +97,26 @@ ecsp_enable_warnings(test_two_instance)
 
 add_test(NAME two_instance COMMAND test_two_instance)
 
+# Board command table (ticket #15). It is not part of ecsp_core: the protocol
+# library has no 0x30-0x33 semantics. The test is the same virtual-link seam.
+add_library(f429_board STATIC
+  board/f429/bringup.c
+)
+target_link_libraries(f429_board PUBLIC ecsp_core)
+target_include_directories(f429_board PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/board/f429
+)
+ecsp_enable_warnings(f429_board)
+
+add_executable(test_board_cmds test/integ/board_cmds.c)
+target_link_libraries(test_board_cmds PRIVATE f429_board)
+target_include_directories(test_board_cmds PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/test/unit
+)
+ecsp_enable_warnings(test_board_cmds)
+
+add_test(NAME board_cmds COMMAND test_board_cmds)
+
 # Vector/spec cross-check (PowerShell); runs under ctest as well.
 find_program(POWERSHELL_EXECUTABLE powershell)
 if(POWERSHELL_EXECUTABLE)
