@@ -285,7 +285,7 @@ static void stop_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
 
 /* spec 7.1: 0x03 and 0x05 are the non-volatile writes. Their first answer
  * may take the whole declared window. */
-static int identity_write(uint8_t cmd)
+static int is_identity_write(uint8_t cmd)
 {
     if (cmd == (uint8_t)ECSP_CMD_SET_HW_VERSION ||
         cmd == (uint8_t)ECSP_CMD_SET_SERIAL) {
@@ -302,7 +302,7 @@ static uint32_t response_limit(uint8_t cmd)
     if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
         return ECSP_RESP_UPGRADE_MS;
     }
-    if (identity_write(cmd)) {
+    if (is_identity_write(cmd)) {
         return ECSP_RESP_IDENTITY_MS;
     }
     /* Getters (spec 7.1). Everything else shares the 100 ms ceiling. */
@@ -804,7 +804,7 @@ int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
          * (spec 7.1). The 3 s dropout must not end that wait on the
          * first silence; three unanswered copies time out below. */
         if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP &&
-            identity_write(slot->txn_wire_cmd)) {
+            is_identity_write(slot->txn_wire_cmd)) {
             progress_txn(h, slot, now_ms);
             continue;
         }
