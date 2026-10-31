@@ -1,54 +1,42 @@
 #include "clock.h"
 
-#include "stm32f429_regs.h"
+#include "stm32f4xx_hal.h"
 
-void f429_clock_init(void)
+void clock_init(void)
 {
-    /* Power interface clock before voltage scaling / overdrive. */
-    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-    (void)RCC->APB1ENR;
+    RCC_OscInitTypeDef osc;
+    RCC_ClkInitTypeDef clk;
 
-    /* Voltage scale 1 is required before locking 180 MHz. */
-    PWR->CR = (PWR->CR & ~(0x3u << 14)) | PWR_CR_VOS_SCALE1;
-    while ((PWR->CSR & PWR_CSR_VOSRDY) == 0u) {
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+    osc.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    osc.HSEState = RCC_HSE_ON;
+    osc.PLL.PLLState = RCC_PLL_ON;
+    osc.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    osc.PLL.PLLM = 25;
+    osc.PLL.PLLN = 360;
+    osc.PLL.PLLP = RCC_PLLP_DIV2;
+    osc.PLL.PLLQ = 7;
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        for (;;) {
+        }
     }
 
-    RCC->CR |= RCC_CR_HSEON;
-    while ((RCC->CR & RCC_CR_HSERDY) == 0u) {
+    if (HAL_PWREx_EnableOverDrive() != HAL_OK) {
+        for (;;) {
+        }
     }
 
-    /* PLL: HSE/25*360/2 = 180 MHz. PLLQ keeps USB-ish 48 MHz shape unused. */
-    RCC->PLLCFGR = (25u << RCC_PLLCFGR_PLLM_Pos)
-                 | (360u << RCC_PLLCFGR_PLLN_Pos)
-                 | (0u << RCC_PLLCFGR_PLLP_Pos)   /* /2 */
-                 | RCC_PLLCFGR_PLLSRC_HSE
-                 | (7u << RCC_PLLCFGR_PLLQ_Pos);
-
-    RCC->CR |= RCC_CR_PLLON;
-    while ((RCC->CR & RCC_CR_PLLRDY) == 0u) {
-    }
-
-    /* Overdrive is mandatory at 180 MHz on this part. */
-    PWR->CR |= PWR_CR_ODEN;
-    while ((PWR->CSR & PWR_CSR_ODRDY) == 0u) {
-    }
-    PWR->CR |= PWR_CR_ODSWEN;
-    while ((PWR->CSR & PWR_CSR_ODSWRDY) == 0u) {
-    }
-
-    /* 5 wait states at 2.7–3.6 V / 180 MHz; turn on the caches. */
-    FLASH->ACR = FLASH_ACR_LATENCY_5WS
-               | FLASH_ACR_PRFTEN
-               | FLASH_ACR_ICEN
-               | FLASH_ACR_DCEN;
-
-    /* AHB = SYSCLK, APB1 = /4 (45 MHz), APB2 = /2 (90 MHz). */
-    RCC->CFGR = (RCC->CFGR & ~0x0000FCFCu)
-              | RCC_CFGR_HPRE_DIV1
-              | RCC_CFGR_PPRE1_DIV4
-              | RCC_CFGR_PPRE2_DIV2;
-
-    RCC->CFGR = (RCC->CFGR & ~0x3u) | RCC_CFGR_SW_PLL;
-    while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL) {
+    clk.ClockType = RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_HCLK
+                  | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    clk.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    clk.APB1CLKDivider = RCC_HCLK_DIV4;
+    clk.APB2CLKDivider = RCC_HCLK_DIV2;
+    /* 5 wait states at 2.7–3.6 V / 180 MHz. */
+    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_5) != HAL_OK) {
+        for (;;) {
+        }
     }
 }

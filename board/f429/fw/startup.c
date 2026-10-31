@@ -1,5 +1,6 @@
 /*
- * Bare-metal startup for STM32F429IGT6. Vector table + .data/.bss; no HAL.
+ * Bare-metal startup for STM32F429IGT6. Vector table + .data/.bss.
+ * SystemInit comes from CMSIS device; HAL owns SysTick after HAL_Init.
  */
 
 #include <stdint.h>
@@ -11,6 +12,7 @@ extern uint32_t _sbss;
 extern uint32_t _ebss;
 extern uint32_t _estack;
 
+extern void SystemInit(void);
 extern int main(void);
 void Reset_Handler(void);
 void Default_Handler(void);
@@ -27,6 +29,8 @@ void Reset_Handler(void)
 {
     uint32_t *src = &_sidata;
     uint32_t *dst = &_sdata;
+
+    SystemInit();
 
     while (dst < &_edata) {
         *dst++ = *src++;

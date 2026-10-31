@@ -52,7 +52,8 @@ src/ecsp/
   host/  link.c
 board/f429/
   bringup.c/.h             板卡功能命令表 0x30–0x33（不进协议库）
-  fw/                      裸机从机固件（USART1；`make -C board/f429/fw`，不开 L4）
+  fw/                      从机固件（USART1；Cube HAL/LL，见 ADR-0009；
+                           `make -C board/f429/fw`，不开 L4）
 test/
   unit/  …按层分文件
   integ/ two_instance.c    同进程双实例互操作

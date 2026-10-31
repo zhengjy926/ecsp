@@ -1,8 +1,8 @@
-#ifndef F429_FW_CLOCK_H
-#define F429_FW_CLOCK_H
+#ifndef CLOCK_H
+#define CLOCK_H
 
-/* 25 MHz HSE -> 180 MHz SYSCLK (ticket #17 / parent #13). */
+/* 25 MHz HSE -> 180 MHz SYSCLK (parent #13 / ADR-0009). */
 
-void f429_clock_init(void);
+void clock_init(void);
 
-#endif /* F429_FW_CLOCK_H */
+#endif /* CLOCK_H */

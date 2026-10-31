@@ -8,9 +8,8 @@
  * answers a code in 0x30-0xEF with 0x04 unless this table lists it.
  * f429_board_init copies the 12-byte chip id and clears the test byte and
  * the counter. Call it at power-up and on every reset, before the slave is
- * stepped again. Tests pass a fixed stand-in; the firmware (ticket #18)
- * passes the die's unique id. This module does not read a peripheral.
- * Ticket #17's image leaves this table unregistered.
+ * stepped again. Tests pass a fixed stand-in; the firmware passes the
+ * die's unique id. This module does not read a peripheral.
  */
 
 #include "ecsp/slave.h"
