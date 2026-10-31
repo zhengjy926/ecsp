@@ -14,4 +14,4 @@ Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/ag
 
 ### Protocol spec
 
-`docs/specs/ecsp-spec.md` is the authoritative ECSP serial protocol spec, and an input to this project rather than a decision about it. Read it before changing frame layout, command codes, response codes, or timing.
+`docs/specs/ecsp-spec.md` is the ECSP serial protocol spec and the correctness definition for this repo. Read it before changing frame layout, command codes, response codes, or timing. A behavior change updates the spec, the golden vectors, and the implementation together.
