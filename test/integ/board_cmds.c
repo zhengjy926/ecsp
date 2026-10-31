@@ -4,8 +4,8 @@
  * Seam: one host context and one slave context, with a byte array between
  * them. The slave is given this board's command table, which is not part of
  * the protocol library. The chip id is a fixed stand-in. Assertions name
- * frames on the link, session state, and transaction results. They do not
- * read context fields.
+ * session state and transaction results (status, response code, payload).
+ * They do not read context fields.
  */
 
 #include "ecsp/ecsp.h"
