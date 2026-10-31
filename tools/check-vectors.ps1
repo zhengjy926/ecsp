@@ -3,7 +3,7 @@
   Verify the ECSP golden vector table against the protocol spec.
 
 .DESCRIPTION
-  Three jobs (docs/specs/ecsp-impl-spec.md section 9):
+  Four jobs (docs/specs/ecsp-impl-spec.md section 9):
 
   1. Recompute CRC16-MODBUS for every vector in test/vectors/vectors.h and
      compare it with the CRC bytes embedded in the frame. Vectors must carry
@@ -18,6 +18,10 @@
      fails when X declares a first-answer ceiling other than this command's
      category ceiling in table 7-1. A sentence that states its own ceiling
      is not that kind of pointer.
+
+  4. Recompute CRC for concrete [FA] ... [0D] frames under
+     docs/specs/boards/. A bracket that is not hex (CRC16, P, SYNC) skips
+     that frame. Section coverage stays on the generic spec.
 
   Exit code: 0 when everything passes, 1 otherwise. Wired into ctest.
 #>
@@ -82,6 +86,33 @@ function ConvertFrom-HexString {
     return $bytes.ToArray()
 }
 
+function Test-FrameBytes {
+    param([byte[]]$Bytes, [string]$Label)
+    $msgs = New-Object System.Collections.Generic.List[string]
+    $n = $Bytes.Count
+    if ($n -lt 9) {
+        $msgs.Add("FAIL [$Label] frame too short ($n bytes)")
+        return $msgs.ToArray()
+    }
+    if ($Bytes[0] -ne 0xFA) {
+        $msgs.Add("FAIL [$Label] bad frame header (expected FA)")
+    }
+    if ($Bytes[$n - 1] -ne 0x0D) {
+        $msgs.Add("FAIL [$Label] bad frame tail (expected 0D)")
+    }
+    $frameLen = [int]$Bytes[1] -bor ([int]$Bytes[2] -shl 8)
+    if ($frameLen -ne $n) {
+        $msgs.Add("FAIL [$Label] length field $frameLen != actual $n bytes")
+    }
+    $cover = [byte[]]$Bytes[1..($n - 4)]
+    $calc = Get-Crc16Modbus $cover
+    $embedded = [int]$Bytes[$n - 3] -bor ([int]$Bytes[$n - 2] -shl 8)
+    if ($calc -ne $embedded) {
+        $msgs.Add(("FAIL [{0}] CRC mismatch: embedded 0x{1:X4}, recomputed 0x{2:X4}" -f $Label, $embedded, $calc))
+    }
+    return $msgs.ToArray()
+}
+
 # ---- 1. parse vectors ----
 
 $vectorsText = Get-Content -LiteralPath $vectorsPath -Raw -Encoding UTF8
@@ -130,33 +161,63 @@ foreach ($line in ($specText -split "`n")) {
 $failures = 0
 
 foreach ($v in $vectors) {
-    $b = $v.Bytes
-    $n = $b.Count
-    if ($n -lt 9) {
-        Write-Host "FAIL [$($v.Name)] frame too short ($n bytes)"
-        $failures++
-        continue
+    foreach ($msg in @(Test-FrameBytes $v.Bytes $v.Name)) {
+        if ($msg) {
+            Write-Host $msg
+            $failures++
+        }
     }
-    if ($b[0] -ne 0xFA) {
-        Write-Host "FAIL [$($v.Name)] bad frame header (expected FA)"
-        $failures++
+}
+
+# Concrete board-spec examples. Placeholders (CRC16, P, SYNC) are skipped.
+# Section coverage stays on the generic spec above.
+$boardFrames = 0
+$boardDir = Join-Path $root 'docs/specs/boards'
+if (Test-Path -LiteralPath $boardDir) {
+    $frameRx = [regex]'\[FA\](?:\s*\[[^\]]+\])*\s*\[0D\]'
+    foreach ($file in (Get-ChildItem -LiteralPath $boardDir -Filter '*.md' -File)) {
+        $lineNo = 0
+        foreach ($raw in [IO.File]::ReadAllLines($file.FullName)) {
+            $lineNo++
+            foreach ($m in $frameRx.Matches($raw)) {
+                $groups = [regex]::Matches($m.Value, '\[([^\]]+)\]')
+                $bytes = New-Object System.Collections.Generic.List[byte]
+                $concrete = $true
+                foreach ($g in $groups) {
+                    $inner = $g.Groups[1].Value.Trim()
+                    if ($inner -notmatch '^[0-9A-Fa-f]{2}(?:\s+[0-9A-Fa-f]{2})*$') {
+                        $concrete = $false
+                        break
+                    }
+                    foreach ($h in ($inner -split '\s+')) {
+                        $bytes.Add([Convert]::ToByte($h, 16))
+                    }
+                }
+                if (-not $concrete) { continue }
+                $boardFrames++
+                $label = '{0}:{1}' -f $file.Name, $lineNo
+                foreach ($msg in @(Test-FrameBytes $bytes.ToArray() $label)) {
+                    if ($msg) {
+                        Write-Host $msg
+                        $failures++
+                    }
+                }
+            }
+        }
     }
-    if ($b[$n - 1] -ne 0x0D) {
-        Write-Host "FAIL [$($v.Name)] bad frame tail (expected 0D)"
-        $failures++
-    }
-    $frameLen = [int]$b[1] -bor ([int]$b[2] -shl 8)
-    if ($frameLen -ne $n) {
-        Write-Host "FAIL [$($v.Name)] length field $frameLen != actual $n bytes"
-        $failures++
-    }
-    $cover = [byte[]]$b[1..($n - 4)]
-    $calc = Get-Crc16Modbus $cover
-    $embedded = [int]$b[$n - 3] -bor ([int]$b[$n - 2] -shl 8)
-    if ($calc -ne $embedded) {
-        Write-Host ("FAIL [{0}] CRC mismatch: embedded 0x{1:X4}, recomputed 0x{2:X4}" -f $v.Name, $embedded, $calc)
-        $failures++
-    }
+}
+
+# A flipped CRC byte must be reported. This keeps the board-frame check
+# from turning into a no-op if Test-FrameBytes stops comparing CRC.
+$crcProbe = [byte[]](0xFA, 0x09, 0x00, 0x03, 0x30, 0x02, 0x9D, 0xC0, 0x0D)
+$crcProbe[$crcProbe.Length - 3] = $crcProbe[$crcProbe.Length - 3] -bxor 0xFF
+$crcProbeHit = $false
+foreach ($hit in @(Test-FrameBytes $crcProbe 'crc-self-test')) {
+    if ($hit -match 'CRC mismatch') { $crcProbeHit = $true }
+}
+if (-not $crcProbeHit) {
+    Write-Host 'FAIL board-frame CRC self-test: a flipped CRC byte was accepted'
+    $failures++
 }
 
 # ---- 4. coverage check ----
@@ -370,5 +431,5 @@ if ($failures -ne 0) {
     exit 1
 }
 
-Write-Host "check-vectors: OK ($($vectors.Count) vectors, all CRCs valid, coverage complete)"
+Write-Host "check-vectors: OK ($($vectors.Count) vectors, $boardFrames board frames, all CRCs valid, coverage complete)"
 exit 0

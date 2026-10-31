@@ -6,6 +6,8 @@
   复制 docs/specs/ecsp-spec.md，替换标题、前言、1.1/1.2 口径、5.3 与附录 C 标题，删除附录 E，
   按本板地址改写示例帧中的 P/B，最后打印待填写清单。
   生成结果自包含：通用层正文完整保留，只有扩展点需要人填。
+  每个必改锚点找不到就失败。-CheckAnchors 只做这件事，并确认改掉 1.1 的一个词会被拒绝。
+  前言和引用里的通用规范版本取自通用规范修订记录的最后一行。
 
   注意：本文件必须以 UTF-8 with BOM 保存。Windows PowerShell 5.1 会按本地代码页解析无 BOM 脚本，中文会乱码并报语法错误。
 
@@ -16,12 +18,13 @@
   powershell -File tools/new-board-spec.ps1 -Name '储能控制板' -ProductAddr 0x03 -BoardAddr 0x04
 #>
 param(
-    [Parameter(Mandatory = $true)][string]$Name,
+    [string]$Name,
     [string]$ProductAddr = '0x03',
     [string]$BoardAddr = '0x02',
     [string]$IfType = 'UART（TTL 3.3V）',
     [string]$Baud = '115200 bps',
-    [string]$Out
+    [string]$Out,
+    [switch]$CheckAnchors
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,51 +45,28 @@ $text = (Get-Content $src -Raw -Encoding UTF8) -replace "`r`n", "`n"
 function Replace-Section {
     param([string]$Doc, [string]$Start, [string]$End, [string]$Body)
     $i = $Doc.IndexOf($Start)
-    if ($i -lt 0) { throw "未找到起始标题：$Start" }
+    if ($i -lt 0) { throw "锚点未找到（$Start）。通用规范已变更，请先更新 tools/new-board-spec.ps1。" }
     if (-not $End) { return $Doc.Substring(0, $i) + $Body }
     $j = $Doc.IndexOf($End, $i + $Start.Length)
-    if ($j -lt 0) { throw "未找到结束标题：$End" }
+    if ($j -lt 0) { throw "锚点未找到（$End）。通用规范已变更，请先更新 tools/new-board-spec.ps1。" }
     return $Doc.Substring(0, $i) + $Body + $Doc.Substring($j)
 }
 
-# 1) 标题
-$oldTitle = '# 设备组自定义串行通信协议（ECSP）通用规范'
-if ($text.IndexOf($oldTitle) -lt 0) { throw '标题行与预期不符，请检查通用规范首行' }
-$text = $text.Replace($oldTitle, "# $Name ECSP 接口协议规范")
+function Replace-Exact {
+    param([string]$Doc, [string]$Old, [string]$New, [string]$Label)
+    if ($Doc.IndexOf($Old) -lt 0) {
+        throw "锚点未找到（$Label）。通用规范已变更，请先更新 tools/new-board-spec.ps1。"
+    }
+    if ($Old -eq $New) { return $Doc }
+    $updated = $Doc.Replace($Old, $New)
+    if ($updated -eq $Doc) {
+        throw "锚点替换未生效（$Label）。"
+    }
+    return $updated
+}
 
-# 2) 前言
-$preface = @"
-## 前言
-
-本规范是${Name}的 ECSP 接口协议规范，自包含地重述设备组自定义串行通信协议（ECSP）的通用层（帧格式、寻址模型、通信机制、通用命令、应答码与通用时序），并在通用规范预留的扩展点内定义本板的板卡功能命令、故障位扩展、时序覆盖值与符合性声明。
-
-本规范遵循《设备组自定义串行通信协议（ECSP）通用规范》V1.0（2026-10-29 快照）。通用层条款不得在本规范内修改；确需修改的，先变更通用规范，再同步本规范。
-
-本规范由通用规范复制并实例化而来，实例化处理依据见通用规范附录 E。
-
-"@
-$preface = $preface.TrimEnd() + "`n`n"
-$text = Replace-Section -Doc $text -Start '## 前言' -End '# 1 引言' -Body $preface
-
-# 2.1) 1.1 目的与 1.2 适用范围改为本板口径
-$text = $text.Replace(
-    '本文件定义设备组自定义串行通信协议（Equipment Custom Serial Protocol, ECSP）的通用部分，作为设备组内各产品软件设计、编码、单元测试与系统联调的共同依据，并为产品 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师、协议维护与评审人员。',
-    "本文件定义${Name}与主机之间的 ECSP 接口协议（通用层 + 本板功能命令 + 本板业务约束），作为双方软件设计、编码、单元测试与系统联调的共同依据，并为产品 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师。")
-$text = $text.Replace(
-    '本规范适用于设备组内各产品中，节点之间以及节点与外部系统之间采用 ECSP 的串行通信链路。采用其他协议或接口形式的通信（如 USB、网络等）不在本规范范围内，由相应接口规范定义。',
-    "本规范适用于${Name}与主机之间的 ECSP 串行通信链路。通用层条款按《设备组自定义串行通信协议（ECSP）通用规范》V1.0 执行，并在本规范内自包含重述；本板级内容（板卡功能命令、故障位扩展、时序覆盖值、符合性声明）由本规范定义。采用其他协议或接口形式的通信（如 USB、网络等）不在本规范范围内。")
-$text = $text.Replace(
-    '本规范只规定通用层。下列内容不在本规范范围内，由对应实例化文档定义：',
-    '本规范自包含通用层，并补充本板内容；下列内容不在本规范范围内，由产品规范定义：')
-
-# 3) 1.3 增补“本板”，1.4 增补通用规范引用
-$ecspTerm = '* **ECSP**：Equipment Custom Serial Protocol，即设备组自定义串行通用协议。'
-$text = $text.Replace($ecspTerm, $ecspTerm + "`n* **本板**：$Name。")
-$refLine = '| 医疗器械软件注册审查指导原则 | 2022年修订版 |'
-$text = $text.Replace($refLine, "| 设备组自定义串行通信协议（ECSP）通用规范 | V1.0（2026-10-29 快照） |`n$refLine")
-
-# 4) 2.2 物理层取值：由“推荐示例”改为本板待填写字段
-$oldPhys = @'
+function Get-RequiredAnchors {
+    $phys = @'
 推荐取值示例如下（非强制，实际取值由板卡规范在本板规范中声明，见附录 C 表 10-3）：
 
 * 接口类型：UART（TTL 3.3V）
@@ -98,7 +78,112 @@ $oldPhys = @'
 
 实际取值以及其对第 7 章时序默认值的影响由板卡规范声明；同一链路两端必须取相同参数，该一致性由产品规范在整机拓扑中核对（见附录 C 表 10-2）。调整波特率时通信双方须同步更新。
 '@
-if ($text.IndexOf($oldPhys) -lt 0) { throw '2.2 节正文与预期不符，请检查通用规范是否已变更' }
+    return @(
+        @{ Label = '标题'; Old = '# 设备组自定义串行通信协议（ECSP）通用规范' }
+        @{ Label = '1.1'; Old = '本文件定义设备组自定义串行通信协议（Equipment Custom Serial Protocol, ECSP）的通用部分，作为设备组内各板卡软件设计、编码、单元测试与系统联调的共同依据，并为软件 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师、协议维护与评审人员。' }
+        @{ Label = '1.2'; Old = '本规范适用于设备组内各产品中，节点之间以及节点与外部系统之间采用 ECSP 的串行通信链路。采用其他协议或接口形式的通信（如 USB、网络等）不在本规范范围内，由相应接口协议规范定义。' }
+        @{ Label = '1.2 范围列表'; Old = '本规范只规定通用层。下列内容不在本规范范围内，由对应实例化文档定义：' }
+        @{ Label = '1.3 ECSP'; Old = '* **ECSP**：Equipment Custom Serial Protocol，即设备组自定义串行通用协议。' }
+        @{ Label = '1.4 参考文档'; Old = '| 医疗器械软件注册审查指导原则 | 2022年修订版 |' }
+        @{ Label = '2.2'; Old = $phys.Replace("`r`n", "`n").TrimEnd() }
+        @{ Label = '示例帧地址'; Old = '取 `P=0x03`、`B=0x02`' }
+        @{ Label = '5.3'; Old = '## 5.3 板卡功能命令的实例化要求' }
+        @{ Label = '5.3 结束'; Old = '# 6 错误处理与异常' }
+        @{ Label = '10.3'; Old = '## 10.3 附录 C：实例化清单' }
+        @{ Label = '10.5'; Old = '## 10.5 附录 E：生成板卡规范的步骤' }
+    )
+}
+
+function Get-MissingAnchorLabels {
+    param([string]$SpecText, $Anchors)
+    $missing = @()
+    foreach ($a in $Anchors) {
+        if ($SpecText.IndexOf([string]$a.Old) -lt 0) {
+            $missing += [string]$a.Label
+        }
+    }
+    if (-not [regex]::IsMatch($SpecText, '(?m)^\| V\d+\.\d+ \| \d{4}-\d{2}-\d{2} \|')) {
+        $missing += '10.1 修订记录'
+    }
+    return $missing
+}
+
+function Get-SpecSnapshot {
+    param([string]$SpecText)
+    $found = [regex]::Matches($SpecText, '(?m)^\| (V\d+\.\d+) \| (\d{4}-\d{2}-\d{2}) \|')
+    if ($found.Count -eq 0) {
+        throw '锚点未找到（10.1 修订记录）。通用规范已变更，请先更新 tools/new-board-spec.ps1。'
+    }
+    $last = $found[$found.Count - 1]
+    return '{0}（{1} 快照）' -f $last.Groups[1].Value, $last.Groups[2].Value
+}
+
+$anchors = @(Get-RequiredAnchors)
+
+if ($CheckAnchors) {
+    $missing = @(Get-MissingAnchorLabels $text $anchors)
+    if ($missing.Count -gt 0) {
+        Write-Host ('FAIL board-spec anchors missing: ' + ($missing -join ', '))
+        exit 1
+    }
+    $anchor11 = $null
+    foreach ($a in $anchors) {
+        if ($a.Label -eq '1.1') { $anchor11 = [string]$a.Old }
+    }
+    if ($null -eq $anchor11 -or $anchor11.IndexOf('各板卡') -lt 0) {
+        Write-Host 'FAIL board-spec anchor self-test: 1.1 has no 各板卡 to rewrite'
+        exit 1
+    }
+    $probe = $text.Replace('各板卡', '各模组')
+    $probeMissing = @(Get-MissingAnchorLabels $probe $anchors)
+    if ($probeMissing -notcontains '1.1') {
+        Write-Host 'FAIL board-spec anchor self-test: changing one word of 1.1 was still accepted'
+        exit 1
+    }
+    Write-Host 'board-spec anchors: OK (self-test: a 1.1 word change is rejected)'
+    exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($Name)) {
+    throw '请提供 -Name。只校验锚点时用 -CheckAnchors。'
+}
+
+$snapshot = Get-SpecSnapshot $text
+
+function Anchor([string]$Label) {
+    foreach ($a in $anchors) {
+        if ($a.Label -eq $Label) { return [string]$a.Old }
+    }
+    throw "内部错误：没有锚点 $Label"
+}
+
+# 1) 标题
+$text = Replace-Exact $text (Anchor '标题') "# $Name ECSP 接口协议规范" '标题'
+
+# 2) 前言
+$preface = @"
+## 前言
+
+本规范是${Name}的 ECSP 接口协议规范，自包含地重述设备组自定义串行通信协议（ECSP）的通用层（帧格式、寻址模型、通信机制、通用命令、应答码与通用时序），并在通用规范预留的扩展点内定义本板的板卡功能命令、故障位扩展、时序覆盖值与符合性声明。
+
+本规范遵循《设备组自定义串行通信协议（ECSP）通用规范》$snapshot。通用层条款不得在本规范内修改；确需修改的，先变更通用规范，再同步本规范。
+
+本规范由通用规范复制并实例化而来，实例化处理依据见通用规范附录 E。
+
+"@
+$preface = $preface.TrimEnd() + "`n`n"
+$text = Replace-Section -Doc $text -Start '## 前言' -End '# 1 引言' -Body $preface
+
+# 2.1) 1.1 目的与 1.2 适用范围改为本板口径
+$text = Replace-Exact $text (Anchor '1.1') "本文件定义${Name}与主机之间的 ECSP 接口协议（通用层 + 本板功能命令 + 本板业务约束），作为双方软件设计、编码、单元测试与系统联调的共同依据，并为产品 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师。" '1.1'
+$text = Replace-Exact $text (Anchor '1.2') "本规范适用于${Name}与主机之间的 ECSP 串行通信链路。通用层条款按《设备组自定义串行通信协议（ECSP）通用规范》$snapshot执行，并在本规范内自包含重述；本板级内容（板卡功能命令、故障位扩展、时序覆盖值、符合性声明）由本规范定义。采用其他协议或接口形式的通信（如 USB、网络等）不在本规范范围内。" '1.2'
+$text = Replace-Exact $text (Anchor '1.2 范围列表') '本规范自包含通用层，并补充本板内容；下列内容不在本规范范围内，由产品规范定义：' '1.2 范围列表'
+
+# 3) 1.3 增补“本板”，1.4 增补通用规范引用
+$text = Replace-Exact $text (Anchor '1.3 ECSP') ((Anchor '1.3 ECSP') + "`n* **本板**：$Name。") '1.3 ECSP'
+$text = Replace-Exact $text (Anchor '1.4 参考文档') ("| 设备组自定义串行通信协议（ECSP）通用规范 | $snapshot |`n" + (Anchor '1.4 参考文档')) '1.4 参考文档'
+
+# 4) 2.2 物理层取值：由“推荐示例”改为本板待填写字段
 $newPhys = @"
 本板物理层参数（同一链路两端必须一致）：
 
@@ -112,7 +197,7 @@ $newPhys = @"
 
 本板取值对第 7 章时序默认值的影响在此声明；与同链路对端的一致性由产品规范在整机拓扑中核对（见附录 C 表 10-2）。
 "@
-$text = $text.Replace($oldPhys, $newPhys)
+$text = Replace-Exact $text (Anchor '2.2') $newPhys.Replace("`r`n", "`n").TrimEnd() '2.2'
 
 # 5) 示例帧地址：仅改写 “产品地址 + 通用命令码 + 板卡地址” 的三连字节
 function Hex2([string]$v) {
@@ -125,8 +210,11 @@ $bHex = Hex2 $BoardAddr
 $addrNote = ''
 if ($pHex -and $bHex) {
     $pattern = '\[03\] \[([0-9A-F]{2})\] \[02\]'
+    if ([regex]::Matches($text, $pattern).Count -eq 0) {
+        throw '锚点未找到（示例帧地址字节）。通用规范已变更，请先更新 tools/new-board-spec.ps1。'
+    }
     $text = [regex]::Replace($text, $pattern, "[$pHex] [`$1] [$bHex]")
-    $text = $text.Replace('取 P=0x03、B=0x02', "取 P=0x$pHex、B=0x$bHex")
+    $text = Replace-Exact $text (Anchor '示例帧地址') "取 ``P=0x$pHex``、``B=0x$bHex``" '示例帧地址'
 }
 else {
     $addrNote = '示例帧地址未改写（ProductAddr/BoardAddr 不是 0x00~0xFF），请手工替换 [03] 与 [02]。'
@@ -207,7 +295,7 @@ $board53 = @'
 $text = Replace-Section -Doc $text -Start '## 5.3 板卡功能命令的实例化要求' -End '# 6 错误处理与异常' -Body $board53
 
 # 7) 附录 C 改为自检表
-$text = $text.Replace('## 10.3 附录 C：实例化清单', '## 10.3 附录 C：实例化自检表')
+$text = Replace-Exact $text (Anchor '10.3') '## 10.3 附录 C：实例化自检表' '10.3'
 
 # 8) 删除附录 E（生成步骤）
 $text = Replace-Section -Doc $text -Start '## 10.5 附录 E：生成板卡规范的步骤' -End $null -Body ''

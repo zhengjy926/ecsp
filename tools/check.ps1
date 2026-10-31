@@ -3,16 +3,22 @@
   Build the tree and run ctest. This is the repo check.
 
 .DESCRIPTION
-  Configures build/ on first use, then cmake --build and ctest.
+  First checks that tools/new-board-spec.ps1 can still find every anchor
+  in docs/specs/ecsp-spec.md. Then configures build/ on first use,
+  cmake --build, and ctest.
   A multi-config generator (Visual Studio) builds and tests Release.
   A single-config generator (MinGW Makefiles, Ninja) keeps the
   existing CMAKE_BUILD_TYPE. Warnings are errors via the CMake targets.
-  Exit code: the build or ctest exit code.
+  Exit code: the anchor check, the build, or ctest.
 #>
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
+
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'new-board-spec.ps1') -CheckAnchors
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 $build = Join-Path $root 'build'
 $cachePath = Join-Path $build 'CMakeCache.txt'
 
