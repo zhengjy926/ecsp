@@ -42,6 +42,9 @@ static uint8_t g_rx[ECSP_MAX_FRAME];
 static uint8_t g_tx[2u * ECSP_MAX_FRAME];
 static ecsp_slave_t g_slave;
 static ecsp_slave_identity_t g_identity;
+static ecsp_slave_identity_t g_nvm;
+static int g_commits;
+static int g_commit_rc;
 
 static ecsp_version_t make_version(const uint8_t b[7])
 {
@@ -50,9 +53,8 @@ static ecsp_version_t make_version(const uint8_t b[7])
     return v;
 }
 
-static void init_slave_cfg(const uint8_t version[7], uint8_t fault_word)
+static void load_default_identity(void)
 {
-    ecsp_slave_cfg_t cfg;
     static const uint8_t default_hw[7] = { '1', '.', '0', '.', '0', '.', '0' };
     static const uint8_t default_sn[12] = {
         'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
@@ -60,6 +62,14 @@ static void init_slave_cfg(const uint8_t version[7], uint8_t fault_word)
 
     g_identity.hardware_version = make_version(default_hw);
     memcpy(g_identity.serial_number.b, default_sn, sizeof default_sn);
+}
+
+/* `g_identity` is the caller's RAM image. A re-init that models power-up
+ * keeps whatever the test loaded into it (the durable image), and does not
+ * put the factory defaults back. */
+static void bind_slave(const uint8_t version[7], uint8_t fault_word)
+{
+    ecsp_slave_cfg_t cfg;
 
     cfg.product_addr = 0x03u;
     cfg.board_addr   = 0x02u;
@@ -73,6 +83,12 @@ static void init_slave_cfg(const uint8_t version[7], uint8_t fault_word)
     cfg.tx_buf = g_tx;
     cfg.tx_cap = sizeof g_tx;
     CHECK_EQ(0, ecsp_slave_init(&g_slave, &cfg));
+}
+
+static void init_slave_cfg(const uint8_t version[7], uint8_t fault_word)
+{
+    load_default_identity();
+    bind_slave(version, fault_word);
 }
 
 static void init_slave_version(const uint8_t version[7])
@@ -410,6 +426,87 @@ static void test_version_with_payload_length_error(void)
 
 /* ---- ticket #5: passthrough commands ---- */
 
+static ecsp_slave_identity_t g_seen[2];
+
+static int commit_to_nvm(ecsp_slave_t *s, const ecsp_slave_identity_t *next)
+{
+    (void)s;
+    if (g_commits < 2) {
+        g_seen[g_commits] = *next;
+    }
+    g_commits++;
+    if (g_commit_rc != ECSP_OK) {
+        return g_commit_rc;
+    }
+    g_nvm = *next;
+    return ECSP_OK;
+}
+
+/* spec 5.2.3 / 5.2.4: 0x00 is answered only after the identity commit
+ * succeeds. A later init that loads the committed image still returns it,
+ * and the serial number that this command did not write stays put. */
+static void test_committed_hardware_version_survives_reinit(void)
+{
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    g_commits = 0;
+    g_commit_rc = ECSP_OK;
+    init_slave();
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_identity.serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_nvm.hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_nvm.serial_number.b, sn, sizeof sn));
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, hw, sizeof hw);
+
+    g_identity = g_nvm;
+    bind_slave(version_1_0_0_0, 0x00u);
+    enter_ready();
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, hw, sizeof hw);
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, sn, sizeof sn);
+}
+
+/* spec 5.2.3: a failed commit answers 0x01 and the saved identity is the
+ * one from before the write. */
+static void test_failed_hardware_commit_keeps_saved_identity(void)
+{
+    static const uint8_t hw[7] = { '2', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    g_commits = 0;
+    g_commit_rc = ECSP_E_VAL;
+    init_slave();
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, 0x01u, NULL, 0u);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, stored, sizeof stored));
+    CHECK_EQ(0, memcmp(g_identity.serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_nvm.hardware_version.b, stored, sizeof stored));
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, stored, sizeof stored);
+}
+
 static void test_set_and_get_hardware_version(void)
 {
     /* spec 5.2.3 / 5.2.4: a successful write is visible verbatim through the
@@ -458,6 +555,42 @@ static void test_bad_parameter_hardware_version_keeps_stored_value(void)
 
     send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
     expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, stored, sizeof stored);
+}
+
+/* spec 5.2.5 / 5.2.6: same commit rule as hardware version. Setting the
+ * serial number does not replace the hardware version. */
+static void test_committed_serial_survives_reinit(void)
+{
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+    };
+
+    g_commits = 0;
+    g_commit_rc = ECSP_OK;
+    init_slave();
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_SERIAL, sn, sizeof sn);
+    expect_resp(ECSP_CMD_SET_SERIAL, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_nvm.serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_nvm.hardware_version.b, hw, sizeof hw));
+
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, sn, sizeof sn);
+
+    g_identity = g_nvm;
+    bind_slave(version_1_0_0_0, 0x00u);
+    enter_ready();
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, sn, sizeof sn);
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, hw, sizeof hw);
 }
 
 static void test_set_and_get_serial_number(void)
@@ -608,6 +741,163 @@ static void test_system_reset_with_bad_length_does_not_reset(void)
     expect_resp(ECSP_CMD_GET_VERSION, ECSP_RS_OK, version_1_0_0_0, 7u);
 }
 
+/* spec 5.2.5: a failed serial commit answers 0x01 and keeps the old serial. */
+static void test_failed_serial_commit_keeps_saved_identity(void)
+{
+    static const uint8_t sn[12] = {
+        'S', 'N', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'
+    };
+    static const uint8_t stored[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    g_commits = 0;
+    g_commit_rc = ECSP_E_VAL;
+    init_slave();
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_SERIAL, sn, sizeof sn);
+    expect_resp(ECSP_CMD_SET_SERIAL, 0x01u, NULL, 0u);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.serial_number.b, stored, sizeof stored));
+    CHECK_EQ(0, memcmp(g_nvm.serial_number.b, stored, sizeof stored));
+
+    send_cmd(ECSP_CMD_GET_SERIAL, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_SERIAL, ECSP_RS_OK, stored, sizeof stored);
+}
+
+/* No callback registered: the command still answers 0x00 and changes RAM.
+ * Reloading the untouched durable image brings the old identity back. */
+static void test_unregistered_commit_changes_ram_only(void)
+{
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+    static const uint8_t old_hw[7] = { '1', '.', '0', '.', '0', '.', '0' };
+
+    g_commits = 0;
+    init_slave();
+    g_nvm = g_identity;
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(0, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_nvm.hardware_version.b, old_hw, sizeof old_hw));
+
+    g_identity = g_nvm;
+    bind_slave(version_1_0_0_0, 0x00u);
+    enter_ready();
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, old_hw, sizeof old_hw);
+}
+
+/* A retransmission is not deduplicated: commit runs again, and both
+ * publishes carry the same identity. */
+static void test_repeated_identity_write_commits_the_same_value(void)
+{
+    static const uint8_t hw[7] = { '3', '.', '1', '.', '0', '.', '0' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+
+    g_commits = 0;
+    g_commit_rc = ECSP_OK;
+    init_slave();
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+    enter_ready();
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_OK, NULL, 0u);
+    send_cmd(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_OK, NULL, 0u);
+
+    CHECK_EQ(2, g_commits);
+    CHECK_EQ(0, memcmp(g_seen[0].hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_seen[1].hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_seen[0].serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_seen[1].serial_number.b, sn, sizeof sn));
+    CHECK_EQ(0, memcmp(g_nvm.hardware_version.b, hw, sizeof hw));
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, hw, sizeof hw));
+
+    send_cmd(ECSP_CMD_GET_HW_VERSION, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_HW_VERSION, ECSP_RS_OK, hw, sizeof hw);
+}
+
+static void arm_commit(void)
+{
+    g_commits = 0;
+    g_commit_rc = ECSP_OK;
+    g_nvm = g_identity;
+    ecsp_slave_set_identity_commit(&g_slave, commit_to_nvm);
+}
+
+/* spec 5.2.3: format, length, session and busy rejections do not commit. */
+static void test_rejected_identity_write_does_not_commit(void)
+{
+    static const uint8_t bad_shape[7] = { '1', '.', '0', '.', '0', '.', 'X' };
+    static const uint8_t short_hw[6] = { '1', '.', '0', '.', '0', '.' };
+    static const uint8_t good_hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t start[2] = { 0x01u, ECSP_CTRL_START };
+    static const uint8_t tmax[2] = { 0xD0u, 0x07u };
+
+    init_slave();
+    arm_commit();
+    send_cmd(ECSP_CMD_SET_HW_VERSION, good_hw, sizeof good_hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_NOT_HANDSHAKEN, NULL, 0u);
+    CHECK_EQ(0, g_commits);
+
+    enter_ready();
+    send_cmd(ECSP_CMD_SET_HW_VERSION, short_hw, sizeof short_hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_BAD_LEN, NULL, 0u);
+    CHECK_EQ(0, g_commits);
+
+    send_cmd(ECSP_CMD_SET_HW_VERSION, bad_shape, sizeof bad_shape);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_BAD_PARAM, NULL, 0u);
+    CHECK_EQ(0, g_commits);
+
+    send_cmd(ECSP_CMD_CONTROL_SELFTEST, start, sizeof start);
+    expect_resp(ECSP_CMD_CONTROL_SELFTEST, ECSP_RS_OK, tmax, sizeof tmax);
+    send_cmd(ECSP_CMD_SET_HW_VERSION, good_hw, sizeof good_hw);
+    expect_resp(ECSP_CMD_SET_HW_VERSION, ECSP_RS_BUSY, NULL, 0u);
+    CHECK_EQ(0, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, stored, sizeof stored));
+}
+
+/* spec 6.2: a mismatched address or a bad CRC is silent, and does not commit. */
+static void test_discarded_identity_frame_does_not_commit(void)
+{
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    uint8_t frame[ECSP_MAX_FRAME];
+    size_t n;
+
+    init_slave();
+    enter_ready();
+    arm_commit();
+
+    n = ecsp_frame_encode(frame, sizeof frame, 0x04u, 0x02u,
+                          ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    CHECK(n > 0u);
+    ecsp_slave_rx(&g_slave, frame, n);
+    ecsp_slave_step(&g_slave, 0u);
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+    CHECK_EQ(0, g_commits);
+
+    n = ecsp_frame_encode(frame, sizeof frame, 0x03u, 0x02u,
+                          ECSP_CMD_SET_HW_VERSION, hw, sizeof hw);
+    CHECK(n > 3u);
+    frame[n - 3u] ^= 0xFFu;
+    ecsp_slave_rx(&g_slave, frame, n);
+    ecsp_slave_step(&g_slave, 0u);
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+    CHECK_EQ(0, g_commits);
+    CHECK_EQ(0, memcmp(g_identity.hardware_version.b, stored, sizeof stored));
+}
+
 static void test_init_rejects_incomplete_configuration(void)
 {
     ecsp_slave_cfg_t cfg;
@@ -678,9 +968,17 @@ int main(void)
     test_version_after_handshake();
     test_version_reports_injected_bytes_verbatim();
     test_version_with_payload_length_error();
+    test_committed_hardware_version_survives_reinit();
+    test_failed_hardware_commit_keeps_saved_identity();
     test_set_and_get_hardware_version();
     test_bad_length_hardware_version_keeps_stored_value();
     test_bad_parameter_hardware_version_keeps_stored_value();
+    test_committed_serial_survives_reinit();
+    test_failed_serial_commit_keeps_saved_identity();
+    test_unregistered_commit_changes_ram_only();
+    test_repeated_identity_write_commits_the_same_value();
+    test_rejected_identity_write_does_not_commit();
+    test_discarded_identity_frame_does_not_commit();
     test_set_and_get_serial_number();
     test_bad_length_serial_keeps_stored_value();
     test_bad_parameter_serial_keeps_stored_value();

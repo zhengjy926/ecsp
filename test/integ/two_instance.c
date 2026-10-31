@@ -10,7 +10,9 @@
  * What this seam catches: retransmission still means one execution, a bad
  * CRC dies quietly, a restarted slave does not hand back the previous
  * answer, a lost result event is closed by get-result, and a reset during
- * a long-running command does not invent that command's outcome.
+ * a long-running command does not invent that command's outcome, and a
+ * committed hardware version is what the host reads back after the slave
+ * is initialised again.
  * What it misses: two rejection reasons on one frame (that stays on the
  * slave-pipeline seam) and a CRC byte that is 0xFA (that stays on the
  * vector seam).
@@ -40,7 +42,7 @@ typedef struct {
     uint8_t cmd;
     int status;
     uint8_t rs;
-    uint8_t data[4];
+    uint8_t data[16];
     uint16_t len;
 } txn_rec_t;
 
@@ -70,6 +72,11 @@ static int g_mute_slave;
 static int g_cut_on;
 static size_t g_cut_bytes;
 static int g_auto_reset;
+static int g_keep_identity;
+static int g_commits;
+static int g_commit_rc;
+static ecsp_slave_identity_t g_nvm;
+static ecsp_slave_identity_t g_seen[2];
 
 static int g_slave_frames;
 static int g_result_events;
@@ -164,6 +171,20 @@ static txn_rec_t *nth_txn(uint8_t cmd, int nth)
     return NULL;
 }
 
+static int commit_identity(ecsp_slave_t *s, const ecsp_slave_identity_t *next)
+{
+    (void)s;
+    if (g_commits < 2) {
+        g_seen[g_commits] = *next;
+    }
+    g_commits++;
+    if (g_commit_rc != ECSP_OK) {
+        return g_commit_rc;
+    }
+    g_nvm = *next;
+    return ECSP_OK;
+}
+
 static void init_slave(void)
 {
     ecsp_slave_cfg_t cfg;
@@ -172,8 +193,10 @@ static void init_slave(void)
         'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
     };
 
-    memcpy(g_identity.hardware_version.b, hw, sizeof hw);
-    memcpy(g_identity.serial_number.b, sn, sizeof sn);
+    if (g_keep_identity == 0) {
+        memcpy(g_identity.hardware_version.b, hw, sizeof hw);
+        memcpy(g_identity.serial_number.b, sn, sizeof sn);
+    }
 
     cfg.product_addr = 0x03u;
     cfg.board_addr = BOARD;
@@ -226,6 +249,9 @@ static void setup(void)
     g_cut_on = 0;
     g_cut_bytes = 0u;
     g_auto_reset = 0;
+    g_keep_identity = 0;
+    g_commits = 0;
+    g_commit_rc = ECSP_OK;
     g_slave_frames = 0;
     g_result_events = 0;
     g_selftest_reqs = 0;
@@ -889,6 +915,182 @@ static void test_unsafe_reset_leaves_the_long_run_waiting(void)
     }
 }
 
+static void reload_slave_from_nvm(void)
+{
+    g_identity = g_nvm;
+    g_keep_identity = 1;
+    init_slave();
+    g_keep_identity = 0;
+    ecsp_slave_set_identity_commit(&g_slave, commit_identity);
+}
+
+/* spec 5.2.3 / 5.2.4: the host's set is 0x00 only after commit. A later
+ * init that loads the committed image still answers with the new hardware
+ * version, and the serial number is untouched. */
+static void test_committed_hardware_version_survives_reinit(void)
+{
+    static const uint8_t hw[7] = { '1', '.', '0', '.', '0', '.', '9' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+    txn_rec_t *set;
+    txn_rec_t *got;
+
+    setup();
+    CHECK(bring_up());
+    g_nvm = g_identity;
+    g_commit_rc = ECSP_OK;
+    ecsp_slave_set_identity_commit(&g_slave, commit_identity);
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw));
+    exchange(g_now);
+    set = nth_txn(ECSP_CMD_SET_HW_VERSION, 0);
+    CHECK(set != NULL);
+    if (set != NULL) {
+        CHECK_SPEC("spec 5.2.3", set->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.3", set->rs == (uint8_t)ECSP_RS_OK);
+    }
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+    CHECK_MEM(hw, sizeof hw, g_nvm.hardware_version.b, sizeof hw);
+    CHECK_MEM(sn, sizeof sn, g_nvm.serial_number.b, sizeof sn);
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_HW_VERSION, NULL, 0u));
+    exchange(g_now);
+    got = nth_txn(ECSP_CMD_GET_HW_VERSION, 0);
+    CHECK(got != NULL);
+    if (got != NULL) {
+        CHECK_SPEC("spec 5.2.4", got->status == ECSP_OK);
+        CHECK_MEM(hw, sizeof hw, got->data, got->len);
+    }
+
+    reload_slave_from_nvm();
+    CHECK(pump_until_rehandshake(g_now, 2000u));
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_HW_VERSION, NULL, 0u));
+    exchange(g_now);
+    got = nth_txn(ECSP_CMD_GET_HW_VERSION, 1);
+    CHECK(got != NULL);
+    if (got != NULL) {
+        CHECK_SPEC("spec 5.2.4", got->status == ECSP_OK);
+        CHECK_MEM(hw, sizeof hw, got->data, got->len);
+    }
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_SERIAL, NULL, 0u));
+    exchange(g_now);
+    got = nth_txn(ECSP_CMD_GET_SERIAL, 0);
+    CHECK(got != NULL);
+    if (got != NULL) {
+        CHECK_SPEC("spec 5.2.6", got->status == ECSP_OK);
+        CHECK_MEM(sn, sizeof sn, got->data, got->len);
+    }
+}
+
+/* spec 5.2.3 / table 6-1: commit failure is 0x01. The host does not retry,
+ * and a get still returns the identity from before the write. */
+static void test_failed_commit_ends_without_retry(void)
+{
+    static const uint8_t hw[7] = { '2', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t stored[7] = { '1', '.', '0', '.', '0', '.', '0' };
+    txn_rec_t *set;
+    txn_rec_t *got;
+    uint32_t t;
+    uint32_t dt;
+    int calls;
+
+    setup();
+    CHECK(bring_up());
+    g_nvm = g_identity;
+    g_commit_rc = ECSP_E_VAL;
+    ecsp_slave_set_identity_commit(&g_slave, commit_identity);
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw));
+    exchange(g_now);
+    set = nth_txn(ECSP_CMD_SET_HW_VERSION, 0);
+    CHECK(set != NULL);
+    if (set != NULL) {
+        CHECK_SPEC("spec 5.2.3", set->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.3", set->rs == 0x01u);
+    }
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    CHECK_MEM(stored, sizeof stored, g_identity.hardware_version.b, sizeof stored);
+    CHECK_MEM(stored, sizeof stored, g_nvm.hardware_version.b, sizeof stored);
+
+    calls = g_log_n;
+    t = g_now;
+    for (dt = 10u; dt <= 3000u; dt += 10u) {
+        exchange(t + dt);
+    }
+    g_now = t + 3000u;
+    CHECK_EQ(calls, g_log_n);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_HW_VERSION, NULL, 0u));
+    exchange(g_now);
+    got = nth_txn(ECSP_CMD_GET_HW_VERSION, 0);
+    CHECK(got != NULL);
+    if (got != NULL) {
+        CHECK_SPEC("spec 5.2.4", got->status == ECSP_OK);
+        CHECK_MEM(stored, sizeof stored, got->data, got->len);
+    }
+    EXPECT_VECTOR(hw_get_resp, g_by_cmd[ECSP_CMD_GET_HW_VERSION],
+                  g_by_cmd_len[ECSP_CMD_GET_HW_VERSION]);
+}
+
+/* spec 6.2: the host retransmits the same bytes after 3 s of silence, the
+ * slave commits again, and the stored identity is still that one value. */
+static void test_retransmit_commits_the_same_identity_again(void)
+{
+    static const uint8_t hw[7] = { '4', '.', '0', '.', '0', '.', '0' };
+    static const uint8_t sn[12] = {
+        'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+    };
+    txn_rec_t *set;
+    uint32_t t;
+    uint32_t dt;
+    int closed = 0;
+
+    setup();
+    CHECK(bring_up());
+    g_nvm = g_identity;
+    g_commit_rc = ECSP_OK;
+    ecsp_slave_set_identity_commit(&g_slave, commit_identity);
+
+    g_drop_slave_once = 1;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_HW_VERSION, hw, sizeof hw));
+    exchange(g_now);
+    CHECK(nth_txn(ECSP_CMD_SET_HW_VERSION, 0) == NULL);
+    CHECK_EQ(1, g_commits);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, BOARD));
+
+    t = g_now;
+    for (dt = 10u; dt <= 3000u; dt += 10u) {
+        exchange(t + dt);
+        if (nth_txn(ECSP_CMD_SET_HW_VERSION, 0) != NULL) {
+            g_now = t + dt;
+            closed = 1;
+            break;
+        }
+    }
+    CHECK_SPEC("spec 7.1", closed);
+    CHECK_SPEC("spec 7.1", g_now == t + 3000u);
+    set = nth_txn(ECSP_CMD_SET_HW_VERSION, 0);
+    CHECK(set != NULL);
+    if (set != NULL) {
+        CHECK_SPEC("spec 5.2.3", set->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.3", set->rs == (uint8_t)ECSP_RS_OK);
+    }
+    CHECK_EQ(2, g_commits);
+    CHECK_MEM(hw, sizeof hw, g_seen[0].hardware_version.b, sizeof hw);
+    CHECK_MEM(hw, sizeof hw, g_seen[1].hardware_version.b, sizeof hw);
+    CHECK_MEM(sn, sizeof sn, g_seen[0].serial_number.b, sizeof sn);
+    CHECK_MEM(sn, sizeof sn, g_seen[1].serial_number.b, sizeof sn);
+    CHECK_MEM(hw, sizeof hw, g_nvm.hardware_version.b, sizeof hw);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+}
+
 int main(void)
 {
     test_result_event_closes_the_long_run();
@@ -899,5 +1101,8 @@ int main(void)
     test_restarted_slave_does_not_return_the_previous_answer();
     test_reset_during_long_run_does_not_assume_the_outcome();
     test_unsafe_reset_leaves_the_long_run_waiting();
+    test_committed_hardware_version_survives_reinit();
+    test_failed_commit_ends_without_retry();
+    test_retransmit_commits_the_same_identity_again();
     return ecsp_test_report();
 }

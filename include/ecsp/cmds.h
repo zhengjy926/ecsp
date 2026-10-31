@@ -71,6 +71,7 @@ typedef struct {
 
 /* Response codes (spec 3.6), the subset this slice emits. */
 #define ECSP_RS_OK             0x00u
+#define ECSP_RS_UNSPECIFIED    0x01u /* commit failed, or any other uncategorised failure */
 #define ECSP_RS_BAD_LEN        0x02u
 #define ECSP_RS_BAD_PARAM      0x03u
 #define ECSP_RS_UNSUPPORTED    0x04u

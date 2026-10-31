@@ -93,15 +93,33 @@ static int h_get_version(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
+/* Publish `next` into the caller-owned identity. A registered commit runs
+ * first and must return ECSP_OK before the RAM image changes; any other
+ * return answers 0x01 and leaves the saved identity as it was. No callback
+ * still writes RAM and answers 0x00. The field this command did not write
+ * is already the stored value inside `next`. */
+static int publish_identity(ecsp_slave_t *s, const ecsp_slave_identity_t *next)
+{
+    if (s->identity_commit != NULL &&
+        s->identity_commit(s, next) != ECSP_OK) {
+        return (int)ECSP_RS_UNSPECIFIED;
+    }
+    *s->cfg.identity = *next;
+    return (int)ECSP_RS_OK;
+}
+
 static int h_set_hw_version(ecsp_slave_t *s, const ecsp_frame_t *req,
                             uint8_t *resp, size_t cap, size_t *resp_len)
 {
+    ecsp_slave_identity_t next;
+
     (void)resp;
     (void)cap;
     *resp_len = 0u;
     /* The pipeline's validator already accepted the 7-byte "X.Y.Z.N" shape. */
-    memcpy(s->cfg.identity->hardware_version.b, req->payload, ECSP_VERSION_LEN);
-    return ECSP_RS_OK;
+    next = *s->cfg.identity;
+    memcpy(next.hardware_version.b, req->payload, ECSP_VERSION_LEN);
+    return publish_identity(s, &next);
 }
 
 static int h_get_hw_version(ecsp_slave_t *s, const ecsp_frame_t *req,
@@ -117,12 +135,15 @@ static int h_get_hw_version(ecsp_slave_t *s, const ecsp_frame_t *req,
 static int h_set_serial_number(ecsp_slave_t *s, const ecsp_frame_t *req,
                                uint8_t *resp, size_t cap, size_t *resp_len)
 {
+    ecsp_slave_identity_t next;
+
     (void)resp;
     (void)cap;
     *resp_len = 0u;
     /* The pipeline's validator already accepted "SN" + 10 digits. */
-    memcpy(s->cfg.identity->serial_number.b, req->payload, ECSP_SERIAL_LEN);
-    return ECSP_RS_OK;
+    next = *s->cfg.identity;
+    memcpy(next.serial_number.b, req->payload, ECSP_SERIAL_LEN);
+    return publish_identity(s, &next);
 }
 
 static int h_get_serial_number(ecsp_slave_t *s, const ecsp_frame_t *req,
@@ -313,6 +334,7 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->pending_reset = 0u;
     s->reset_requested = 0u;
     s->in_step = 0u;
+    s->identity_commit = NULL;
     ecsp_long_run_init(s);
     /* A soft reset empties the transaction cache (ADR-0004). Re-initialising
      * the context is how this library models that reset. */
@@ -668,6 +690,15 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
      * and is therefore not suppressed by answers (spec 4.1.2). */
     report_if_due(s, now_ms);
     s->in_step = 0u;
+}
+
+void ecsp_slave_set_identity_commit(ecsp_slave_t *s,
+                                    ecsp_slave_identity_commit_t fn)
+{
+    if (s == NULL) {
+        return;
+    }
+    s->identity_commit = fn;
 }
 
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s)

@@ -33,6 +33,7 @@
 #define HANDSHAKE_MS 100u
 #define QUERY_MS     50u
 #define ACTION_MS    100u
+#define IDENTITY_MS  3000u /* spec 7.1: 0x03 / 0x05 first answer */
 #define DROPOUT_MS   3000u
 #define SETUP_MS     5000u
 
@@ -127,6 +128,38 @@ static const uint8_t reset_req[] = {
     0xFA, 0x0A, 0x00, 0x03, 0x07, 0x02, 0x01, 0x71, 0x94, 0x0D
 };
 static const uint8_t reset_seq[] = { 0x01u };
+
+/* spec 5.2.3 set hardware version "1.0.0.0", and the 0x00 / 0x01 answers. */
+static const uint8_t hw_version[7] = {
+    '1', '.', '0', '.', '0', '.', '0'
+};
+static const uint8_t hw_set_req[] = {
+    0xFA, 0x10, 0x00, 0x03, 0x03, 0x02,
+    0x31, 0x2E, 0x30, 0x2E, 0x30, 0x2E, 0x30,
+    0xB2, 0xC1, 0x0D
+};
+static const uint8_t hw_set_ok[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x03, 0x02, 0x00, 0xF1, 0x95, 0x0D
+};
+static const uint8_t hw_set_fail[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x03, 0x02, 0x01, 0x30, 0x55, 0x0D
+};
+
+/* spec 5.2.5 set serial number "SN0000000000". */
+static const uint8_t serial_number[12] = {
+    'S', 'N', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0'
+};
+static const uint8_t sn_set_req[] = {
+    0xFA, 0x15, 0x00, 0x03, 0x05, 0x02,
+    0x53, 0x4E, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0xB3, 0x49, 0x0D
+};
+
+/* spec 5.2.11 set low-power mode, enter (0x01). */
+static const uint8_t low_power_mode[1] = { 0x01u };
+static const uint8_t low_power_req[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x0B, 0x02, 0x01, 0xB1, 0x97, 0x0D
+};
 
 /* spec 5.2.16 heartbeat, used as a valid frame that is not a command answer. */
 static const uint8_t heartbeat[] = {
@@ -1021,6 +1054,190 @@ static void test_two_hosts_keep_separate_fifos(void)
     CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&b, 0x02u));
 }
 
+/* spec 7.1: an identity answer inside the old 100 ms ceiling ends the
+ * transaction at once. The host does not sit out the 3 s window. */
+static void test_identity_answer_within_100ms_ends_immediately(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_HW_VERSION,
+                                      hw_version, sizeof hw_version,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    ecsp_host_rx(&g_host, hw_set_ok, sizeof hw_set_ok);
+    step_at(20u + ACTION_MS);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_SET_HW_VERSION, g_txn_cmd);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(0u, g_txn_len);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + IDENTITY_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* spec 7.1: 100 ms of silence is not a retry. An answer at 2 s still
+ * succeeds, and the transaction ends on that step. */
+static void test_identity_answer_at_2s_still_succeeds(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_HW_VERSION,
+                                      hw_version, sizeof hw_version,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+
+    step_at(20u + ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(20u + 2000u - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, hw_set_ok, sizeof hw_set_ok);
+    step_at(20u + 2000u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + 2000u + 10u);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+}
+
+/* spec 6.2 / 7.1: three silent waits of 3 s, then one timeout. Dropout
+ * does not end the transaction on the first wait. */
+static void test_identity_silence_times_out_after_three_waits(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_HW_VERSION,
+                                      hw_version, sizeof hw_version,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+
+    step_at(20u + IDENTITY_MS - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+
+    step_at(20u + IDENTITY_MS);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(20u + 2u * IDENTITY_MS);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+
+    step_at(20u + 3u * IDENTITY_MS - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + 3u * IDENTITY_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_E_TIMEOUT, g_txn_status);
+    CHECK_EQ(ECSP_CMD_SET_HW_VERSION, g_txn_cmd);
+
+    step_at(20u + 4u * IDENTITY_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+}
+
+/* spec table 6-1: a 0x01 answer ends the identity transaction. It is not
+ * silence, so the host does not send the request again. */
+static void test_identity_reject_is_not_retried(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_HW_VERSION,
+                                      hw_version, sizeof hw_version,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(hw_set_req, sizeof hw_set_req);
+
+    ecsp_host_rx(&g_host, hw_set_fail, sizeof hw_set_fail);
+    step_at(20u + 50u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(0x01, g_txn_rs);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+
+    step_at(20u + IDENTITY_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+}
+
+/* spec 7.1: a set command that is not a non-volatile write still uses
+ * the 100 ms ceiling. */
+static void test_low_power_still_retries_at_100ms(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_LOW_POWER,
+                                      low_power_mode, sizeof low_power_mode,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(low_power_req, sizeof low_power_req);
+
+    step_at(20u + ACTION_MS - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + ACTION_MS);
+    expect_bytes(low_power_req, sizeof low_power_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+}
+
+/* spec 7.1: setting the serial number waits the same 3 s, not 100 ms. */
+static void test_serial_write_waits_3s_not_100ms(void)
+{
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_SERIAL,
+                                      serial_number, sizeof serial_number,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(sn_set_req, sizeof sn_set_req);
+
+    step_at(20u + ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + IDENTITY_MS);
+    expect_bytes(sn_set_req, sizeof sn_set_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
 int main(void)
 {
     test_first_step_sends_handshake_request();
@@ -1044,5 +1261,11 @@ int main(void)
     test_reentering_step_does_not_spend_a_retry();
     test_callback_steps_a_different_host();
     test_two_hosts_keep_separate_fifos();
+    test_identity_answer_within_100ms_ends_immediately();
+    test_identity_answer_at_2s_still_succeeds();
+    test_identity_silence_times_out_after_three_waits();
+    test_identity_reject_is_not_retried();
+    test_low_power_still_retries_at_100ms();
+    test_serial_write_waits_3s_not_100ms();
     return ecsp_test_report();
 }

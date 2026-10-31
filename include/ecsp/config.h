@@ -54,9 +54,18 @@
 #endif
 
 /* Set-class and action-class first answers (spec 7.1). Online upgrade's
- * first answer is the longer ceiling in the same table. */
+ * first answer is the longer ceiling in the same table. Setting the
+ * hardware version (0x03) or the serial number (0x05) is a non-volatile
+ * write and uses ECSP_RESP_IDENTITY_MS instead. */
 #ifndef ECSP_RESP_ACTION_MS
 #define ECSP_RESP_ACTION_MS 100u
+#endif
+
+/* First answer for a non-volatile identity write (spec 7.1). A sector erase
+ * may answer at about 2 s; only a full 3 s of silence is a timeout. A
+ * product may only loosen this. */
+#ifndef ECSP_RESP_IDENTITY_MS
+#define ECSP_RESP_IDENTITY_MS 3000u
 #endif
 
 #ifndef ECSP_RESP_UPGRADE_MS

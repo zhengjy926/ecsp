@@ -45,7 +45,15 @@ static void ecsp_test_fail(const char *file, int line, const char *msg)
 
 /* Compare two byte sequences: length first, then contents.
  * A function, not an if() in the macro: MSVC /W4 treats
- * `if (sizeof a != sizeof a)` as C4127 and /WX would fail the existing tests. */
+ * `if (sizeof a != sizeof a)` as C4127 and /WX would fail the existing tests.
+ * Not every test file calls CHECK_MEM; the attribute keeps that file clean. */
+#if defined(__GNUC__)
+__attribute__((unused))
+#endif
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4505)
+#endif
 static void ecsp_test_check_mem(const char *file, int line,
                                 const void *want, size_t want_len,
                                 const void *got, size_t got_len)
@@ -65,6 +73,10 @@ static void ecsp_test_check_mem(const char *file, int line,
         /* lengths match and bytes match */
     }
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #define CHECK_MEM(want, want_len, got, got_len) \
     ecsp_test_check_mem(__FILE__, __LINE__, (want), (size_t)(want_len), \

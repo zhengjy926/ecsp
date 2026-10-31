@@ -113,13 +113,24 @@ typedef struct {
     size_t table_len;
 } ecsp_cmd_table_t;
 
-/* Caller-owned identity storage. The library does not persist anything: a
- * successful 0x03/0x05 writes these bytes in place so the caller can commit
- * them to NVM at its own pace (spec 5.2.3, 5.2.5). */
+/* Caller-owned identity storage (spec 5.2.3, 5.2.5). The library does not
+ * touch non-volatile memory itself. A registered commit callback receives
+ * the identity after this one write; only ECSP_OK publishes it here and
+ * answers 0x00. With no callback, a successful command still writes these
+ * bytes and answers 0x00. */
 typedef struct {
     ecsp_version_t hardware_version; /* "X.Y.Z.N" (5.2.3 / 5.2.4) */
     ecsp_serial_t  serial_number;    /* "SN" + 10 digits (5.2.5 / 5.2.6) */
 } ecsp_slave_identity_t;
+
+/* Durable publish of a 0x03/0x05 identity (spec 5.2.3, 5.2.5). `next` is the
+ * identity after the one field in this command is replaced, and the pointer
+ * is only valid for this call. Return ECSP_OK only once those bytes are
+ * durable. Any other return answers 0x01 and leaves the stored identity
+ * unchanged. NULL after init means there is no non-volatile store. Runs on
+ * the ecsp_slave_step stack and must not call ecsp_slave_step. */
+typedef int (*ecsp_slave_identity_commit_t)(ecsp_slave_t *s,
+                                            const ecsp_slave_identity_t *next);
 
 /* One cached answer (private): the (command, sequence) key plus the complete
  * answer frame exactly as it was put on the wire. ECSP_MAX_FRAME bytes cover
@@ -189,6 +200,7 @@ struct ecsp_slave {
      * st_* / up_* are the last finished result of that command; a reset or
      * host-restart handshake drops the in-flight one without a result event. */
     ecsp_slave_safe_abort_t safe_abort;
+    ecsp_slave_identity_commit_t identity_commit;
     uint8_t lr_cmd;
     uint8_t st_known;
     uint8_t st_result;
@@ -235,6 +247,9 @@ uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
  * after init) means the sequence is undefined. The callback runs on the
  * step stack and must not call ecsp_slave_step. */
 void ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn);
+
+void ecsp_slave_set_identity_commit(ecsp_slave_t *s,
+                                    ecsp_slave_identity_commit_t fn);
 
 /* Command code of the in-flight long-running command, or 0 when idle. */
 uint8_t ecsp_slave_long_run_cmd(const ecsp_slave_t *s);

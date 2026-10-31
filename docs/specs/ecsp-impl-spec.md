@@ -80,7 +80,8 @@ CMakeLists.txt             只用于本机测试，库源码不依赖 CMake
 | `ECSP_HEARTBEAT_MS` | 1000 | 就绪后 0x10 心跳的周期，规范允许 ±10%；产品覆盖时须同步调整掉线门限（规范 5.2.16、7.2.1）。等待握手时的 0x01 上报由规范 4.1.2 固定为 1 Hz，没有对应宏 |
 | `ECSP_RESP_HANDSHAKE_MS` | 100 | 主机等待握手应答的时限。表 7-1 没有特殊会话类一行，故取动作类上限；产品只允许放宽（表 7-4） |
 | `ECSP_RESP_QUERY_MS` | 50 | 主机等待获取类应答的时限（规范 7.1），版本核对的 0x02 用它。产品只允许放宽 |
-| `ECSP_RESP_ACTION_MS` | 100 | 设置类与动作类首次应答时限（规范 7.1）。未单列的命令也用它 |
+| `ECSP_RESP_ACTION_MS` | 100 | 设置类与动作类首次应答时限（规范 7.1）。未单列的命令也用它。0x03/0x05 不用它 |
+| `ECSP_RESP_IDENTITY_MS` | 3000 | 设置硬件版本（0x03）与设置序列号（0x05）的第一次应答时限（规范 7.1）。产品只允许放宽。等待该应答时，3 s 掉线判据不截断含初发共 3 次的重发 |
 | `ECSP_RESP_UPGRADE_MS` | 500 | 在线升级（0x0C）首次应答时限（规范 7.1） |
 | `ECSP_SESSION_SETUP_MS` | 5000 | 上电至可下发业务命令的会话建立总时限（规范 4.1.1、表 7-2）。产品只允许放宽 |
 
@@ -191,11 +192,15 @@ uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
 int  ecsp_slave_reset_requested(const ecsp_slave_t *s);
 typedef int (*ecsp_slave_safe_abort_t)(ecsp_slave_t *s, uint8_t cmd);
 void    ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn);
+typedef int (*ecsp_slave_identity_commit_t)(ecsp_slave_t *s,
+                                            const ecsp_slave_identity_t *next);
+void    ecsp_slave_set_identity_commit(ecsp_slave_t *s,
+                                       ecsp_slave_identity_commit_t fn);
 uint8_t ecsp_slave_long_run_cmd(const ecsp_slave_t *s);
 int     ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result);
 ```
 
-`ecsp_slave_cfg_t` 还传入：`identity`（调用方持有的标识存储，0x03/0x05 原地写入，使用方据此自行落 NVM）、`fault_word`（0x12 返回的注入故障字）、`cmds`（0x30~0xEF 板卡命令表）。发送缓冲至少容纳最大的通用应答或板卡表声明的 `resp_max` 应答；`ecsp_slave_init` 会拒绝过小的缓冲。命令可以声明 `validate`（第 8 步）：返回 `ECSP_E_LEN` 映射 0x02，返回 `ECSP_E_VAL` 映射 0x03。handler 只写应答载荷的**数据**部分（不含应答码），返回值即应答码；框架不覆盖该返回值，非 0x00 应答不携带数据。命令表只用于板卡命令，通用命令 0x01~0x12 的语义由库内处理。
+`ecsp_slave_cfg_t` 还传入：`identity`（调用方持有的标识存储）、`fault_word`（0x12 返回的注入故障字）、`cmds`（0x30~0xEF 板卡命令表）。发送缓冲至少容纳最大的通用应答或板卡表声明的 `resp_max` 应答；`ecsp_slave_init` 会拒绝过小的缓冲。命令可以声明 `validate`（第 8 步）：返回 `ECSP_E_LEN` 映射 0x02，返回 `ECSP_E_VAL` 映射 0x03。handler 只写应答载荷的**数据**部分（不含应答码），返回值即应答码；框架不覆盖该返回值，非 0x00 应答不携带数据。命令表只用于板卡命令，通用命令 0x01~0x12 的语义由库内处理。
 
 **处理管线顺序固定**（ADR-0002），一次只写一遍，handler 内不得重复：
 
@@ -213,7 +218,9 @@ int     ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result);
 
 管线由 `engine.c` 一处实现；新增拒绝条件必须落到上表某一步。第 5 步的长度由命令表的 `req_len` 声明；`ECSP_CMD_LEN_ANY` 表示命令自有变长载荷，由该命令的 `validate` 在第 8 步校验并返回 `ECSP_E_LEN`（映射 0x02）。第 8 步对通用命令使用库内校验函数，对板卡命令使用命令表注入的 `validate`；handler 不重复上述任何判定。
 
-**0x07 / 0x0B 的平台边界**：库不做硬件驱动（第 1 章）。0x07 在应答入队后只置位 `ecsp_slave_reset_requested`；产品必须在发送 FIFO 排空后执行实际复位，该复位重新初始化上下文，会话回到等待握手、事务缓存清空都发生在那一刻（见 ADR-0008）。库内不提前清空会话与缓存：复位真正发生前，重传的同一 `(0x07, seq)` 必须回放原应答，若先清会话就会回 0x10，主机无法与"被拒绝"区分；窗口内不同事务序号的新 0x07 则应答 0x11（规范 5.2.7、4.4 第 5 条），不执行并发复位。0x0B 只记录请求的模式，产品用 `ecsp_slave_low_power_mode` 读取并执行进入/退出低功耗。0x03/0x05 的 0x00 表示已写入调用方的 `identity` 存储；落 NVM 由使用方负责（库不做持久化）。
+**0x07 / 0x0B 的平台边界**：库不做硬件驱动（第 1 章）。0x07 在应答入队后只置位 `ecsp_slave_reset_requested`；产品必须在发送 FIFO 排空后执行实际复位，该复位重新初始化上下文，会话回到等待握手、事务缓存清空都发生在那一刻（见 ADR-0008）。库内不提前清空会话与缓存：复位真正发生前，重传的同一 `(0x07, seq)` 必须回放原应答，若先清会话就会回 0x10，主机无法与"被拒绝"区分；窗口内不同事务序号的新 0x07 则应答 0x11（规范 5.2.7、4.4 第 5 条），不执行并发复位。0x0B 只记录请求的模式，产品用 `ecsp_slave_low_power_mode` 读取并执行进入/退出低功耗。
+
+**0x03 / 0x05 的提交**：这两条是非易失写入，库不做扇区擦除。`ecsp_slave_set_identity_commit` 注册提交回调，库把“这一项替换后的整份身份”交给它。回调返回 `ECSP_OK` 之后，库才把这份身份写入 `identity` 并应答 0x00；其它返回值应答 0x01，`identity` 保持原样。未注册回调时仍只改 RAM 并应答 0x00。回调在 `ecsp_slave_step` 的栈上执行，不得再次调用 `ecsp_slave_step`。重新初始化会清掉回调。格式非法应答 0x03、长度不符应答 0x02、会话未建立应答 0x10、长耗时执行中应答 0x11，地址不匹配和 CRC 失败则静默丢弃；这些路径都不调用提交。这两条命令没有事务序号，相同内容的重发会再提交一次，身份仍是这一份值。
 
 **会话与心跳**：从机侧有两条轴——会话（`等待握手` / `就绪`）与执行（`空闲` / `忙`），对应主机侧看到的会话状态与事务状态。`session.c` 维护两个回绕安全的时间戳，都在第一次 `ecsp_slave_step` 时锁存（库内取不到时钟），因此首个周期帧在一个完整周期之后才到期，而不是上电立刻发出：
 
@@ -303,7 +310,7 @@ void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 
 `ecsp_host_submit` 在会话不是“正常通信”时返回 `ECSP_E_STATE`，不入队、不发帧。会话为“正常通信”且当前事务空闲时，把业务命令标为“待发送”；下一拍 `ecsp_host_step` 才写入发送 FIFO 并进入“等待应答”。同一从机同时只保留一个在途事务，第二个 `submit` 返回 `ECSP_E_CAP`。事务在途时会话状态保持“正常通信”。`cb` 在事务结束时于 step 栈上调用恰好一次：应答到达为 `ECSP_OK`（`payload` 不含应答码），重发耗尽为 `ECSP_E_TIMEOUT`，心跳掉线取消在途事务为 `ECSP_E_OFFLINE`，发送 FIFO 装不下为 `ECSP_E_LINK`。step 进行中提交的请求留到下一次 step 再发，多台从机按提交先后写入发送 FIFO。
 
-**上电与掉线（#9、#10）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限 `ECSP_RESP_HANDSHAKE_MS`，含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”并上报 `ECSP_HOST_EV_PROBE_FAILED`，进入被动等待：收到该从机的空载荷 0x01 上报后，同一拍重新下发握手请求。自第一次 step 起超过 `ECSP_SESSION_SETUP_MS` 仍未进入“正常通信”或“版本不符”，会话改为“掉线”并上报 `ECSP_HOST_EV_OFFLINE`。应答码不是 0x00 则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT`。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 三次无应答回到“未连接”并上报失败。版本 7 字节相等进入“正常通信”，不相等停在“版本不符”。进入“正常通信”后，业务命令按表 7-1 的时限重发，含初发最多 3 次，重发复用提交时的载荷（事务序号不变）；次数用尽则会话“掉线”、事务回“空闲”。连续 `3 * ECSP_HEARTBEAT_MS` 未收到该从机任何有效帧同样“掉线”；若当时有在途事务，回调只触发这一次，不再另发一帧重试。掉线后业务命令被本地拒绝。收到握手上报才重新探测，版本核对通过后才回到“正常通信”。一台从机掉线不影响其它槽位。
+**上电与掉线（#9、#10）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限 `ECSP_RESP_HANDSHAKE_MS`，含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”并上报 `ECSP_HOST_EV_PROBE_FAILED`，进入被动等待：收到该从机的空载荷 0x01 上报后，同一拍重新下发握手请求。自第一次 step 起超过 `ECSP_SESSION_SETUP_MS` 仍未进入“正常通信”或“版本不符”，会话改为“掉线”并上报 `ECSP_HOST_EV_OFFLINE`。应答码不是 0x00 则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT`。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 三次无应答回到“未连接”并上报失败。版本 7 字节相等进入“正常通信”，不相等停在“版本不符”。进入“正常通信”后，业务命令按表 7-1 的时限重发，含初发最多 3 次，重发复用提交时的载荷（事务序号不变）；次数用尽则会话“掉线”、事务回“空闲”。设置硬件版本（0x03）与设置序列号（0x05）的时限是 `ECSP_RESP_IDENTITY_MS`（3 s），不是 100 ms。应答一旦到达（含约 2 s，或 100 ms 内）事务立即结束。等待这两条应答时，3 s 掉线判据不截断那 3 次重发；三次仍无应答才以 `ECSP_E_TIMEOUT` 结束。应答码不是 0x00 则结束事务且不重发。其它设置类命令（如 0x0B）的第一次应答上限仍是 `ECSP_RESP_ACTION_MS`。连续 `3 * ECSP_HEARTBEAT_MS` 未收到该从机任何有效帧同样“掉线”；若当时有在途事务，回调只触发这一次，不再另发一帧重试。掉线后业务命令被本地拒绝。收到握手上报才重新探测，版本核对通过后才回到“正常通信”。一台从机掉线不影响其它槽位。
 
 **回调语义**（ADR-0005，#11）：
 
@@ -324,7 +331,8 @@ void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 | 项 | 默认 | 来源 |
 | --- | --- | --- |
 | 获取类应答 | ≤50 ms | 规范 7.1 |
-| 设置类应答 | ≤100 ms | 规范 7.1 |
+| 设置类应答 | ≤100 ms | 规范 7.1；0x03/0x05 除外 |
+| 设置硬件版本 / 设置序列号首次应答 | ≤3 s | 规范 7.1，`ECSP_RESP_IDENTITY_MS` |
 | 动作类首次应答 | ≤100 ms | 规范 7.1 |
 | 在线升级首次应答 | ≤500 ms | 规范 7.1 |
 | 心跳周期 | 1000 ms ±10% | 规范 5.2.16 |

@@ -21,6 +21,7 @@
 
 #if ECSP_RESP_HANDSHAKE_MS > 0x7FFFFFFFu || ECSP_RESP_QUERY_MS > 0x7FFFFFFFu \
     || ECSP_RESP_ACTION_MS > 0x7FFFFFFFu || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
+    || ECSP_RESP_IDENTITY_MS > 0x7FFFFFFFu \
     || ECSP_SESSION_SETUP_MS > 0x7FFFFFFFu || ECSP_DROPOUT_MS > 0x7FFFFFFFu
 #error "host deadlines must be below 2^31 ms to stay wrap-safe"
 #endif
@@ -282,6 +283,17 @@ static void stop_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
     report_event(h, slot, event);
 }
 
+/* spec 7.1: 0x03 and 0x05 are the non-volatile writes. Their first answer
+ * may take the whole declared window. */
+static int identity_write(uint8_t cmd)
+{
+    if (cmd == (uint8_t)ECSP_CMD_SET_HW_VERSION ||
+        cmd == (uint8_t)ECSP_CMD_SET_SERIAL) {
+        return 1;
+    }
+    return 0;
+}
+
 static uint32_t response_limit(uint8_t cmd)
 {
     if (cmd == (uint8_t)ECSP_CMD_HANDSHAKE) {
@@ -289,6 +301,9 @@ static uint32_t response_limit(uint8_t cmd)
     }
     if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
         return ECSP_RESP_UPGRADE_MS;
+    }
+    if (identity_write(cmd)) {
+        return ECSP_RESP_IDENTITY_MS;
     }
     /* Getters (spec 7.1). Everything else shares the 100 ms ceiling. */
     if (cmd == (uint8_t)ECSP_CMD_GET_VERSION ||
@@ -782,7 +797,18 @@ int ecsp_host_step(ecsp_host_t *h, uint32_t now_ms)
     for (i = 0u; i < h->slave_count; i++) {
         ecsp_host_slot_t *slot = &h->slots[i];
 
-        if (setup_expired(h, slot, now_ms) || drop_if_silent(h, slot, now_ms)) {
+        if (setup_expired(h, slot, now_ms)) {
+            continue;
+        }
+        /* A sector erase can stay silent for each 3 s answer window
+         * (spec 7.1). The 3 s dropout must not end that wait on the
+         * first silence; three unanswered copies time out below. */
+        if (slot->txn_state == (uint8_t)ECSP_TXN_WAIT_RESP &&
+            identity_write(slot->txn_wire_cmd)) {
+            progress_txn(h, slot, now_ms);
+            continue;
+        }
+        if (drop_if_silent(h, slot, now_ms)) {
             continue;
         }
         progress_bringup(h, slot, now_ms);
