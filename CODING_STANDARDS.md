@@ -11,6 +11,16 @@ instantiation. Do not paste Sleep, Stop, pin, or USART detail into a common
 command section unless the originating issue names that value. Prefer a pointer
 to `docs/specs/ecsp-spec.md` for unchanged link semantics.
 
+## Board bring-up companion bits
+
+When a board ticket names a clock or physical-layer target (SYSCLK rate,
+overdrive, USART pins, baud), companion register settings required by the
+reference manual to reach that target are in scope for the Spec axis: Flash
+wait-state companions (prefetch / caches), GPIO speed for the named pins,
+PLL Q when the PLL block is programmed, and similar. Flag scope creep only
+for behaviour the ticket did not ask for (new commands, new timing ceilings,
+a second test seam, Sleep when the ticket deferred it).
+
 ## Host session pauses
 
 Flags that pause dropout or otherwise gate the session axis clear when the

@@ -6,11 +6,13 @@
   First checks that tools/new-board-spec.ps1 can still find every anchor
   in docs/specs/ecsp-spec.md, then that board specs do not invent hardware
   tokens inside common-command sections. Then configures build/ on first
-  use, cmake --build, and ctest.
+  use, cmake --build, and ctest. After ctest, tools/check-f429-fw.ps1
+  cross-builds board/f429/fw when arm-none-eabi-gcc is on PATH (skips
+  otherwise; CI does not require that toolchain).
   A multi-config generator (Visual Studio) builds and tests Release.
   A single-config generator (MinGW Makefiles, Ninja) keeps the
   existing CMAKE_BUILD_TYPE. Warnings are errors via the CMake targets.
-  Exit code: a doc check, the build, or ctest.
+  Exit code: a doc check, the build, ctest, or the optional firmware build.
   Wire this script to commits with tools/install-hooks.ps1.
 #>
 
@@ -46,4 +48,7 @@ if ($multi) {
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & ctest @testArgs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-f429-fw.ps1')
 exit $LASTEXITCODE
