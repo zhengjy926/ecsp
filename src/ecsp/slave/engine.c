@@ -77,8 +77,10 @@ static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
     /* Stop in-flight work before the answer is queued (spec 4.1.4). The
      * handshake is still answered 0x00: a failed safe-abort latches the fault
      * bit but does not refuse the host's restart. Already-ready stays ready
-     * and does not resume the 0x01 report (spec 4.1.4, 5.2.1). */
+     * and does not resume the 0x01 report (spec 4.1.4, 5.2.1). An accepted
+     * handshake also leaves low power (spec 5.2.11). */
     ecsp_long_run_on_handshake(s);
+    s->low_power_mode = ECSP_LOW_POWER_EXIT;
     s->pending_ready = 1u;
     return ECSP_RS_OK;
 }
@@ -462,7 +464,15 @@ static void apply_pending_state(ecsp_slave_t *s)
  * per step, so a stalled caller clock cannot release a burst. */
 static void report_if_due(ecsp_slave_t *s, uint32_t now_ms)
 {
-    uint8_t cmd = ecsp_session_due_report(s, now_ms);
+    uint8_t cmd;
+
+    /* spec 5.2.11 / 7.2.2: low power sends no heartbeat (and no other
+     * active report; fault/result are held in long_run_flush). */
+    if (s->low_power_mode == ECSP_LOW_POWER_ENTER) {
+        return;
+    }
+
+    cmd = ecsp_session_due_report(s, now_ms);
 
     /* A periodic report carries no payload and no response code (spec 5.2.1
      * and 5.2.16 examples are minimal frames). A full FIFO defers it: nothing
@@ -681,8 +691,11 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
     }
 
     /* Fault report, then the one-shot result event, then at most one periodic
-     * frame. A full FIFO leaves the pending frame for the next step. */
-    ecsp_long_run_flush(s, now_ms, send_frame);
+     * frame. A full FIFO leaves the pending frame for the next step. Low
+     * power holds those active reports until exit (spec 5.2.11). */
+    if (s->low_power_mode != ECSP_LOW_POWER_ENTER) {
+        ecsp_long_run_flush(s, now_ms, send_frame);
+    }
 
     /* Received frames were answered first: a ready slave that just answered
      * needs no heartbeat yet, because the answer restarted the window

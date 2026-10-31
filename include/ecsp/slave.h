@@ -232,14 +232,16 @@ void ecsp_slave_rx(ecsp_slave_t *s, const uint8_t *data, size_t len);
  * received frames are handled, one periodic frame is queued if it is due: a
  * 0x01 report at a fixed 1 Hz while waiting for a handshake, or a 0x10
  * heartbeat once ready and a full ECSP_HEARTBEAT_MS has passed since anything
- * was sent (spec 4.1.2, 5.2.16, 7.2.2). Any queued frame restarts the
- * heartbeat window. The first call latches the clocks, so the first periodic
- * frame is due one period later; comparisons are wrap-safe. */
+ * was sent (spec 4.1.2, 5.2.16, 7.2.2). Low power suppresses the heartbeat
+ * and held fault/result reports. Any queued frame restarts the heartbeat
+ * window. The first call latches the clocks, so the first periodic frame is
+ * due one period later; comparisons are wrap-safe. */
 void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
 
 /* Last low-power mode accepted by 0x0B (ECSP_LOW_POWER_EXIT /
- * ECSP_LOW_POWER_ENTER, spec 5.2.11). The library only records the request;
- * the product applies it. Returns EXIT for a NULL context. */
+ * ECSP_LOW_POWER_ENTER, spec 5.2.11). Enter suppresses heartbeats and held
+ * active reports until exit or an accepted handshake; the product also
+ * reads this to drive hardware sleep. Returns EXIT for a NULL context. */
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
 
 /* Register the safe-abort sequence used when 0x07 or an unexpected handshake

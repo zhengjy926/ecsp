@@ -118,6 +118,19 @@ static void finish_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, int status,
     uint8_t cmd = slot->txn_cmd;
     uint8_t board = slot->board_addr;
 
+    /* spec 5.2.11 / 7.2.1: pause dropout only after enter answered 0x00.
+     * Exit 0x00 clears the pause. Reset keeps the pause until the session
+     * is rebuilt (arm_probe on the handshake report). A lost enter never
+     * reaches here as OK. */
+    if (status == ECSP_OK && response_code == (uint8_t)ECSP_RS_OK &&
+        cmd == (uint8_t)ECSP_CMD_SET_LOW_POWER && slot->txn_len >= 1u) {
+        if (slot->txn_payload[0] == (uint8_t)ECSP_LOW_POWER_ENTER) {
+            slot->low_power = 1u;
+        } else if (slot->txn_payload[0] == (uint8_t)ECSP_LOW_POWER_EXIT) {
+            slot->low_power = 0u;
+        }
+    }
+
     dequeue_submit(h, slot);
     slot->txn_state = (uint8_t)ECSP_TXN_IDLE;
     slot->txn_cb = NULL;
@@ -219,6 +232,7 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
         slot->bringup_ms = 0u;
         slot->bringup_valid = 0u;
         slot->bringup_open = 1u;
+        slot->low_power = 0u;
     }
     return ECSP_OK;
 }
@@ -244,6 +258,13 @@ int ecsp_host_submit(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
      * communication. Anywhere else the refusal is local — nothing is queued. */
     if (slot->session != (uint8_t)ECSP_SESS_NORMAL) {
         return ECSP_E_STATE;
+    }
+    /* spec 5.2.11: after enter is confirmed, only 0x0B and 0x07 may leave.
+     * Other business fails locally with a reason distinct from ECSP_E_STATE. */
+    if (slot->low_power != 0u &&
+        cmd != (uint8_t)ECSP_CMD_SET_LOW_POWER &&
+        cmd != (uint8_t)ECSP_CMD_SYSTEM_RESET) {
+        return ECSP_E_LOW_POWER;
     }
     /* spec 4.4: 0x07 during wait-result is queued in place of that wait.
      * The long-running callback stays pending until the reset is answered. */
@@ -412,6 +433,7 @@ static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms
     if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {
         slot->session = (uint8_t)ECSP_SESS_OFFLINE;
         slot->phase = (uint8_t)PHASE_DONE;
+        slot->low_power = 0u;
         finish_txn(h, slot, ECSP_E_TIMEOUT, 0u, NULL, 0u);
         report_event(h, slot, ECSP_HOST_EV_OFFLINE);
         return;
@@ -452,11 +474,16 @@ static int drop_if_silent(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_m
     if (slot->session != (uint8_t)ECSP_SESS_NORMAL || slot->last_rx_valid == 0u) {
         return 0;
     }
+    /* spec 5.2.11 / 7.2.1: confirmed low power pauses dropout for this slave. */
+    if (slot->low_power != 0u) {
+        return 0;
+    }
     if (!deadline_reached(slot->last_rx_ms, now_ms, ECSP_DROPOUT_MS)) {
         return 0;
     }
     slot->session = (uint8_t)ECSP_SESS_OFFLINE;
     slot->phase = (uint8_t)PHASE_DONE;
+    slot->low_power = 0u;
     if (slot->txn_state != (uint8_t)ECSP_TXN_IDLE) {
         finish_txn(h, slot, ECSP_E_OFFLINE, 0u, NULL, 0u);
     }
@@ -502,6 +529,7 @@ static void arm_probe(ecsp_host_slot_t *slot)
     slot->session = (uint8_t)ECSP_SESS_DISCONNECTED;
     slot->phase = (uint8_t)PHASE_SEND_HS;
     slot->attempt = 0u;
+    slot->low_power = 0u;
 }
 
 /* 0x08 and 0x0C share one shape (spec 4.3, 5.2.8, 5.2.12): an accept carries
@@ -620,6 +648,15 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
             }
         }
         return;
+    }
+
+    /* spec 5.2.11: an accepted handshake leaves low power on the slave, so
+     * the host resumes dropout for this slot. */
+    if (slot->low_power != 0u &&
+        frame->cmd == (uint8_t)ECSP_CMD_HANDSHAKE &&
+        frame->payload_len == 1u &&
+        frame->payload[0] == (uint8_t)ECSP_RS_OK) {
+        slot->low_power = 0u;
     }
 
     if (slot->phase == (uint8_t)PHASE_WAIT_HS &&

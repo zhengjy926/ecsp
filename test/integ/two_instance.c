@@ -10,9 +10,10 @@
  * What this seam catches: retransmission still means one execution, a bad
  * CRC dies quietly, a restarted slave does not hand back the previous
  * answer, a lost result event is closed by get-result, and a reset during
- * a long-running command does not invent that command's outcome, and a
+ * a long-running command does not invent that command's outcome, a
  * committed hardware version is what the host reads back after the slave
- * is initialised again.
+ * is initialised again, and low power stops heartbeats without dropout while
+ * local refusal keeps other business off the wire.
  * What it misses: two rejection reasons on one frame (that stays on the
  * slave-pipeline seam) and a CRC byte that is 0xFA (that stays on the
  * vector seam).
@@ -80,6 +81,7 @@ static ecsp_slave_identity_t g_seen[2];
 
 static int g_slave_frames;
 static int g_result_events;
+static int g_heartbeats;
 static int g_selftest_reqs;
 static int g_get_selftest_reqs;
 static uint8_t g_result_frame[ECSP_MAX_FRAME];
@@ -254,6 +256,7 @@ static void setup(void)
     g_commit_rc = ECSP_OK;
     g_slave_frames = 0;
     g_result_events = 0;
+    g_heartbeats = 0;
     g_selftest_reqs = 0;
     g_get_selftest_reqs = 0;
     g_result_len = 0u;
@@ -381,6 +384,9 @@ static void deliver_slave(void)
         }
         g_slave_frames++;
         remember(frame.cmd, buf + off, consumed, 0);
+        if (frame.cmd == (uint8_t)ECSP_CMD_HEARTBEAT) {
+            g_heartbeats++;
+        }
         drop = 0;
         if (frame.cmd == (uint8_t)ECSP_CMD_SELFTEST_REPORT) {
             g_result_events++;
@@ -1091,6 +1097,255 @@ static void test_retransmit_commits_the_same_identity_again(void)
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
 }
 
+static void inject_hex_to_slave(const char *hex)
+{
+    uint8_t buf[ECSP_MAX_FRAME];
+    size_t n = decode_hex(hex, buf, sizeof buf);
+
+    CHECK(n > 0u);
+    ecsp_slave_rx(&g_slave, buf, n);
+}
+
+/* spec 5.2.11 / 7.2.1: enter 0x00 stops heartbeats, keeps the session
+ * normal past three silent periods, refuses other business locally with
+ * ECSP_E_LOW_POWER (no frame on the wire), and exit restores heartbeats. */
+static void test_low_power_silence_without_dropout(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t exit_mode[1] = { ECSP_LOW_POWER_EXIT };
+    txn_rec_t *r;
+    uint32_t t;
+    int beats_before;
+    size_t host_tx_before;
+
+    setup();
+    CHECK(bring_up());
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    exchange(g_now);
+    r = nth_txn(ECSP_CMD_SET_LOW_POWER, 0);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.11", r->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.11", r->rs == (uint8_t)ECSP_RS_OK);
+    }
+    EXPECT_VECTOR(low_power_req, g_host_by_cmd[ECSP_CMD_SET_LOW_POWER],
+                  g_host_by_cmd_len[ECSP_CMD_SET_LOW_POWER]);
+    EXPECT_VECTOR(low_power_resp, g_by_cmd[ECSP_CMD_SET_LOW_POWER],
+                  g_by_cmd_len[ECSP_CMD_SET_LOW_POWER]);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+
+    host_tx_before = ecsp_host_tx_pending(&g_host);
+    CHECK_EQ(ECSP_E_LOW_POWER, submit(ECSP_CMD_GET_FAULT, NULL, 0u));
+    CHECK(ECSP_E_LOW_POWER != ECSP_E_STATE);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    exchange(g_now);
+    CHECK_SPEC("spec 5.2.11",
+               ecsp_host_tx_pending(&g_host) == host_tx_before);
+    CHECK_SPEC("spec 5.2.11",
+               g_host_by_cmd_len[ECSP_CMD_GET_FAULT] == 0u);
+
+    beats_before = g_heartbeats;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + DROPOUT_MS + 500u; g_now += 10u) {
+        exchange(g_now);
+    }
+    CHECK_SPEC("spec 7.2.1",
+               ecsp_host_session(&g_host, BOARD) == ECSP_SESS_NORMAL);
+    CHECK_SPEC("spec 5.2.11", g_heartbeats == beats_before);
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    exchange(g_now);
+    r = nth_txn(ECSP_CMD_SET_LOW_POWER, 1);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.11", r->rs == (uint8_t)ECSP_RS_OK);
+    }
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, exit_mode, sizeof exit_mode));
+    exchange(g_now);
+    r = nth_txn(ECSP_CMD_SET_LOW_POWER, 2);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.11", r->rs == (uint8_t)ECSP_RS_OK);
+    }
+
+    beats_before = g_heartbeats;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + REPORT_MS + 100u; g_now += 10u) {
+        exchange(g_now);
+    }
+    CHECK_SPEC("spec 7.2.2", g_heartbeats > beats_before);
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_FAULT, NULL, 0u));
+    exchange(g_now);
+    CHECK(nth_txn(ECSP_CMD_GET_FAULT, 0) != NULL);
+}
+
+/* spec 5.2.11: a result event latched before enter stays unsent until exit. */
+static void test_low_power_holds_result_event_until_exit(void)
+{
+    uint8_t start[2];
+    uint32_t t;
+    int beats_before;
+
+    setup();
+    CHECK(bring_up());
+
+    start[0] = 0x01u;
+    start[1] = (uint8_t)ECSP_CTRL_START;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_CONTROL_SELFTEST, start, 2u));
+    exchange(g_now);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, BOARD));
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+
+    /* Enter on the slave before the next flush; host is still waiting for
+     * the result, so it cannot submit 0x0B itself. */
+    inject_hex_to_slave(low_power_req_hex);
+    ecsp_slave_step(&g_slave, g_now);
+    deliver_slave();
+    EXPECT_VECTOR(low_power_resp, g_by_cmd[ECSP_CMD_SET_LOW_POWER],
+                  g_by_cmd_len[ECSP_CMD_SET_LOW_POWER]);
+    CHECK_SPEC("spec 5.2.11", g_result_events == 0);
+
+    beats_before = g_heartbeats;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + REPORT_MS + 200u; g_now += 10u) {
+        ecsp_slave_step(&g_slave, g_now);
+        deliver_slave();
+        CHECK_SPEC("spec 5.2.11", g_result_events == 0);
+    }
+    CHECK_SPEC("spec 5.2.11", g_heartbeats == beats_before);
+
+    inject_hex_to_slave(low_power_exit_req_hex);
+    ecsp_slave_step(&g_slave, g_now);
+    deliver_slave();
+    CHECK_SPEC("spec 5.2.11", g_result_events == 1);
+    EXPECT_VECTOR(selftest_report, g_result_frame, g_result_len);
+}
+
+/* spec 5.2.11: without a confirmed enter 0x00, dropout still fires; a muted
+ * enter times out after three 100 ms attempts and never pauses dropout. */
+static void test_low_power_enter_silence_does_not_pause_dropout(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const char selftest_start_hex[] =
+        "FA 0B 00 03 08 02 01 00 47 F0 0D";
+    txn_rec_t *r;
+    uint32_t t;
+
+    setup();
+    CHECK(bring_up());
+
+    /* Make the slave busy without holding the host transaction axis. */
+    inject_hex_to_slave(selftest_start_hex);
+    ecsp_slave_step(&g_slave, g_now);
+    deliver_slave();
+    (void)ecsp_host_step(&g_host, g_now);
+
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    exchange(g_now);
+    r = nth_txn(ECSP_CMD_SET_LOW_POWER, 0);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.11", r->rs == (uint8_t)ECSP_RS_BUSY);
+    }
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+
+    /* Enter was 0x11, so dropout is still armed. Mute the slave and wait. */
+    g_mute_slave = 1;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + DROPOUT_MS; g_now += 10u) {
+        exchange(g_now);
+    }
+    CHECK_SPEC("spec 7.2.1",
+               ecsp_host_session(&g_host, BOARD) == ECSP_SESS_OFFLINE);
+
+    setup();
+    CHECK(bring_up());
+    g_mute_slave = 1;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    t = g_now;
+    for (g_now = t; g_now <= t + 3u * ACTION_MS + 50u; g_now += 10u) {
+        exchange(g_now);
+    }
+    r = nth_txn(ECSP_CMD_SET_LOW_POWER, 0);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.11", r->status == ECSP_E_TIMEOUT);
+    }
+    CHECK_SPEC("spec 5.2.11",
+               ecsp_host_session(&g_host, BOARD) == ECSP_SESS_OFFLINE);
+    CHECK_EQ(ECSP_E_STATE, submit(ECSP_CMD_GET_FAULT, NULL, 0u));
+}
+
+/* spec 5.2.11: handshake during low power leaves it; a foreign get is
+ * answered while low power continues; reset is still allowed. */
+static void test_low_power_handshake_foreign_frame_and_reset(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t seq[1] = { 0x01u };
+    txn_rec_t *r;
+    int beats_before;
+    uint32_t t;
+
+    setup();
+    CHECK(bring_up());
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    exchange(g_now);
+    CHECK(nth_txn(ECSP_CMD_SET_LOW_POWER, 0) != NULL);
+
+    inject_hex_to_slave(version_req_hex);
+    ecsp_slave_step(&g_slave, g_now);
+    deliver_slave();
+    EXPECT_VECTOR(version_resp, g_by_cmd[ECSP_CMD_GET_VERSION],
+                  g_by_cmd_len[ECSP_CMD_GET_VERSION]);
+
+    beats_before = g_heartbeats;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + DROPOUT_MS + 200u; g_now += 10u) {
+        exchange(g_now);
+    }
+    CHECK_SPEC("spec 5.2.11", g_heartbeats == beats_before);
+    CHECK_SPEC("spec 7.2.1",
+               ecsp_host_session(&g_host, BOARD) == ECSP_SESS_NORMAL);
+
+    inject_hex_to_slave(handshake_req_hex);
+    ecsp_slave_step(&g_slave, g_now);
+    deliver_slave();
+    (void)ecsp_host_step(&g_host, g_now);
+    EXPECT_VECTOR(handshake_resp, g_by_cmd[ECSP_CMD_HANDSHAKE],
+                  g_by_cmd_len[ECSP_CMD_HANDSHAKE]);
+    /* Handshake answer cleared the host pause; a quiet slave must drop. */
+    g_mute_slave = 1;
+    t = g_now;
+    for (g_now = t + 10u; g_now <= t + DROPOUT_MS; g_now += 10u) {
+        exchange(g_now);
+    }
+    CHECK_SPEC("spec 5.2.11",
+               ecsp_host_session(&g_host, BOARD) == ECSP_SESS_OFFLINE);
+
+    setup();
+    CHECK(bring_up());
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
+    exchange(g_now);
+    g_auto_reset = 1;
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SYSTEM_RESET, seq, sizeof seq));
+    exchange(g_now);
+    r = nth_txn(ECSP_CMD_SYSTEM_RESET, 0);
+    CHECK(r != NULL);
+    if (r != NULL) {
+        CHECK_SPEC("spec 5.2.7", r->status == ECSP_OK);
+        CHECK_SPEC("spec 5.2.7", r->rs == (uint8_t)ECSP_RS_OK);
+    }
+    CHECK(g_resets >= 1);
+    CHECK(pump_until_rehandshake(g_now, 2000u));
+    CHECK_EQ(ECSP_OK, submit(ECSP_CMD_GET_FAULT, NULL, 0u));
+    exchange(g_now);
+    CHECK(nth_txn(ECSP_CMD_GET_FAULT, 0) != NULL);
+}
+
 int main(void)
 {
     test_result_event_closes_the_long_run();
@@ -1104,5 +1359,9 @@ int main(void)
     test_committed_hardware_version_survives_reinit();
     test_failed_commit_ends_without_retry();
     test_retransmit_commits_the_same_identity_again();
+    test_low_power_silence_without_dropout();
+    test_low_power_holds_result_event_until_exit();
+    test_low_power_enter_silence_does_not_pause_dropout();
+    test_low_power_handshake_foreign_frame_and_reset();
     return ecsp_test_report();
 }

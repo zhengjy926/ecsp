@@ -66,9 +66,11 @@ ECSP_VECTOR(selftest_query_req, "FA 09 00 03 09 02 8F 90 0D", "spec 5.2.9")
 /* 5.2.10 self-test result report (result 0x00 = success). No response code. */
 ECSP_VECTOR(selftest_report, "FA 0A 00 03 0A 02 00 21 97 0D", "spec 5.2.10")
 
-/* 5.2.11 set low-power mode (mode 0x01 = enter) request / response. */
-ECSP_VECTOR(low_power_req,  "FA 0A 00 03 0B 02 01 B1 97 0D", "spec 5.2.11")
-ECSP_VECTOR(low_power_resp, "FA 0A 00 03 0B 02 00 70 57 0D", "spec 5.2.11")
+/* 5.2.11 set low-power mode: enter (0x01) request, exit (0x00) request, and
+ * the shared 0x00 answer. Exit request and answer are byte-identical. */
+ECSP_VECTOR(low_power_req,      "FA 0A 00 03 0B 02 01 B1 97 0D", "spec 5.2.11")
+ECSP_VECTOR(low_power_exit_req, "FA 0A 00 03 0B 02 00 70 57 0D", "spec 5.2.11")
+ECSP_VECTOR(low_power_resp,     "FA 0A 00 03 0B 02 00 70 57 0D", "spec 5.2.11")
 
 /* 5.2.14 upgrade result report (response code 0x00 = success). */
 ECSP_VECTOR(upgrade_report, "FA 0A 00 03 0E 02 00 60 56 0D", "spec 5.2.14")

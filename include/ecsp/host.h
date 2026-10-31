@@ -148,6 +148,8 @@ typedef struct {
     uint32_t       bringup_ms;
     uint8_t        bringup_valid;
     uint8_t        bringup_open;
+    uint8_t        low_power; /* 1 = dropout paused after confirmed enter
+                               * (spec 5.2.11, 7.2.1); not the mode byte */
 } ecsp_host_slot_t;
 
 struct ecsp_host {
