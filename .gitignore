@@ -1,3 +1,6 @@
 # Build directories (CMake/CTest)
 /build/
 /build-*/
+
+# Cross-built F429 firmware objects (board/f429/fw/Makefile)
+/board/f429/fw/build/

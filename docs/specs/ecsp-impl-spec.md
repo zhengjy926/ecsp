@@ -48,8 +48,11 @@ include/ecsp/
   host.h                    L4
 src/ecsp/
   core/  frame.c crc.c bytes.c cmds.c
-  slave/ engine.c session.c txn_cache.c
-  host/  link.c api.c
+  slave/ engine.c session.c txn_cache.c long_run.c
+  host/  link.c
+board/f429/
+  bringup.c/.h             板卡功能命令表 0x30–0x33（不进协议库）
+  fw/                      裸机从机固件（USART1；`make -C board/f429/fw`，不开 L4）
 test/
   unit/  …按层分文件
   integ/ two_instance.c    同进程双实例互操作
