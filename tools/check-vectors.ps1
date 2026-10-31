@@ -1,9 +1,9 @@
-<#
+﻿<#
 .SYNOPSIS
   Verify the ECSP golden vector table against the protocol spec.
 
 .DESCRIPTION
-  Two jobs (docs/specs/ecsp-impl-spec.md section 9):
+  Three jobs (docs/specs/ecsp-impl-spec.md section 9):
 
   1. Recompute CRC16-MODBUS for every vector in test/vectors/vectors.h and
      compare it with the CRC bytes embedded in the frame. Vectors must carry
@@ -13,6 +13,11 @@
      assert every required section is covered by at least as many vectors.
      Deleting a vector therefore reports the corresponding spec section as
      missing.
+
+  3. A command section whose timing sentence only says "same as section X"
+     fails when X declares a first-answer ceiling other than this command's
+     category ceiling in table 7-1. A sentence that states its own ceiling
+     is not that kind of pointer.
 
   Exit code: 0 when everything passes, 1 otherwise. Wired into ctest.
 #>
@@ -190,6 +195,169 @@ foreach ($sec in $required.Keys) {
 foreach ($v in $vectors) {
     if (-not $sectionExists.ContainsKey($v.Section)) {
         Write-Host "DANGLING vector $($v.Name): spec $($v.Section) does not exist in the spec"
+        $failures++
+    }
+}
+
+# ---- 5. timing sentences that only point at another section ----
+
+function ConvertTo-Milliseconds {
+    param([string]$Number, [string]$Unit)
+    $value = [int]$Number
+    if ($Unit -eq 's') {
+        return $value * 1000
+    }
+    return $value
+}
+
+function Get-SpecSections {
+    param([string]$Text)
+    $sections = New-Object System.Collections.Generic.List[object]
+    $current = $null
+    foreach ($raw in ($Text -split "`n")) {
+        $line = $raw.TrimEnd("`r")
+        if ($line -match '^(#{1,6})\s+([0-9]+(?:\.[0-9]+)*)\s') {
+            $sectionId = $Matches[2]
+            $cmd = $null
+            if ($line -match '0x([0-9A-Fa-f]{2})') {
+                $cmd = $Matches[1].ToLower()
+            }
+            $current = [pscustomobject]@{
+                Id       = $sectionId
+                Cmd      = $cmd
+                Category = $null
+                Lines    = New-Object System.Collections.Generic.List[string]
+            }
+            $sections.Add($current)
+            continue
+        }
+        if ($null -eq $current) { continue }
+        if ($line -match '命令类别[：:]\s*(.+)$') {
+            $current.Category = $Matches[1].Trim()
+        }
+        $current.Lines.Add($line)
+    }
+    return $sections
+}
+
+function Get-TableCeilings {
+    param($Sections)
+    $byLabel = @{}
+    $byCmd = @{}
+    $inTable = $false
+    foreach ($sec in $Sections) {
+        if ($sec.Id -ne '7.1') { continue }
+        foreach ($line in $sec.Lines) {
+            if ($line -match '表 7-1') { $inTable = $true }
+            if (-not $inTable) { continue }
+            if ($line -match '^\|\s*(.+?)\s*\|\s*≤\s*(\d+)\s*(ms|s)\s*\|') {
+                $label = $Matches[1].Trim()
+                $ms = ConvertTo-Milliseconds $Matches[2] $Matches[3]
+                $byLabel[$label] = $ms
+                foreach ($code in [regex]::Matches($label, '0x([0-9A-Fa-f]{2})')) {
+                    $byCmd[$code.Groups[1].Value.ToLower()] = $ms
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{ ByLabel = $byLabel; ByCmd = $byCmd }
+}
+
+function Get-CategoryCeiling {
+    param($Ceilings, [string]$Cmd, [string]$Category)
+    if ($Cmd -and $Ceilings.ByCmd.ContainsKey($Cmd)) {
+        return [int]$Ceilings.ByCmd[$Cmd]
+    }
+    $label = $null
+    if ($Category -match '获取') { $label = '获取类' }
+    elseif ($Category -match '设置') { $label = '设置类' }
+    elseif ($Category -match '动作') { $label = '动作类' }
+    if ($label -and $Ceilings.ByLabel.ContainsKey($label)) {
+        return [int]$Ceilings.ByLabel[$label]
+    }
+    return $null
+}
+
+function Get-DeclaredCeiling {
+    param($Lines)
+    $text = $Lines -join "`n"
+    foreach ($sentence in ($text -split '。')) {
+        if ($sentence -notmatch '时序') { continue }
+        if ($sentence -match '上限为\s*(\d+)\s*(ms|s)') {
+            return (ConvertTo-Milliseconds $Matches[1] $Matches[2])
+        }
+    }
+    foreach ($sentence in ($text -split '。')) {
+        if ($sentence -notmatch '时序') { continue }
+        if ($sentence -match '≤\s*(\d+)\s*(ms|s)') {
+            return (ConvertTo-Milliseconds $Matches[1] $Matches[2])
+        }
+    }
+    return $null
+}
+
+function Get-EffectiveCeiling {
+    param($Section, $Ceilings, $Declared)
+    if ($null -ne $Declared) { return [int]$Declared }
+    $fallback = Get-CategoryCeiling $Ceilings $Section.Cmd $Section.Category
+    if ($null -eq $fallback) { return $null }
+    return [int]$fallback
+}
+
+function Find-TimingInheritanceFailures {
+    param([string]$SpecText)
+    $found = New-Object System.Collections.Generic.List[string]
+    $sections = @(Get-SpecSections $SpecText)
+    $ceilings = Get-TableCeilings $sections
+    $byId = @{}
+    foreach ($sec in $sections) { $byId[$sec.Id] = $sec }
+
+    foreach ($sec in $sections) {
+        if (-not $sec.Category) { continue }
+        $own = Get-CategoryCeiling $ceilings $sec.Cmd $sec.Category
+        if ($null -eq $own) { continue }
+        $text = $sec.Lines -join "`n"
+        foreach ($sentence in ($text -split '。')) {
+            if ($sentence -notmatch '时序') { continue }
+            if ($sentence -match '\d+\s*(ms|s)') { continue }
+            if ($sentence -notmatch '同\s*(\d+(?:\.\d+)+)\s*节') { continue }
+            $targetId = $Matches[1]
+            if (-not $byId.ContainsKey($targetId)) {
+                $found.Add("spec $($sec.Id) timing points at missing section $targetId")
+                continue
+            }
+            $target = $byId[$targetId]
+            $targetMs = Get-EffectiveCeiling $target $ceilings (Get-DeclaredCeiling $target.Lines)
+            if ($null -eq $targetMs) { continue }
+            if ([int]$targetMs -ne [int]$own) {
+                $found.Add("spec $($sec.Id) timing follows $targetId (${targetMs} ms) but this command's ceiling is $own ms")
+            }
+        }
+    }
+    return $found.ToArray()
+}
+
+$timingFailures = @(Find-TimingInheritanceFailures -SpecText $specText)
+foreach ($msg in $timingFailures) {
+    if ($msg) {
+        Write-Host "FAIL $msg"
+        $failures++
+    }
+}
+
+$anchored = '错误处理同 5.2.3 节。时序适用表 7-1 设置类的 ≤100 ms，不沿用 5.2.3 的 3 s 非易失写入上限。'
+$probe = $specText.Replace($anchored, '时序与错误处理同 5.2.3 节。')
+if ($probe -eq $specText) {
+    Write-Host 'FAIL timing check self-test: the low-power timing sentence is gone, so the detector is no longer anchored'
+    $failures++
+} else {
+    $probeHits = @(Find-TimingInheritanceFailures -SpecText $probe)
+    $saw = $false
+    foreach ($hit in $probeHits) {
+        if ($hit -match '5\.2\.11' -and $hit -match '5\.2\.3') { $saw = $true }
+    }
+    if (-not $saw) {
+        Write-Host 'FAIL timing check self-test: a wholesale pointer at 5.2.3 was not reported'
         $failures++
     }
 }

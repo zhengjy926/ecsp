@@ -350,7 +350,7 @@ ECSP_VECTOR(handshake_req, FA 09 00 03 01 02 88 50 0D,                        "s
 ECSP_VECTOR(version_resp,  FA 11 00 03 02 02 00 31 2E 30 2E 30 2E 30 FA 0E 0D, "spec 5.2.2")
 ```
 
-CRC 字节在文件里写成实际值，不写 `CRC16` 占位——向量必须是可直接断言的字节。上面的 `version_resp` 不是随手选的：它的 CRC 低字节恰好是 `0xFA`，扫描器若在 CRC 区里重新找帧头就会把这一帧切坏。`tools/check-vectors.ps1` 负责两件事：重新计算每个向量的 CRC 并比对；扫描 `ecsp-spec.md` 中写死具体字节的示例帧，报告"规范里有、向量里没有"的遗漏。
+CRC 字节在文件里写成实际值，不写 `CRC16` 占位——向量必须是可直接断言的字节。上面的 `version_resp` 不是随手选的：它的 CRC 低字节恰好是 `0xFA`，扫描器若在 CRC 区里重新找帧头就会把这一帧切坏。`tools/check-vectors.ps1` 负责三件事：重新计算每个向量的 CRC 并比对；扫描 `ecsp-spec.md` 中写死具体字节的示例帧，报告"规范里有、向量里没有"的遗漏；命令节的时序若整段写成「同某一节」，而被指向的那节声明了和本命令类别不同的时限，则失败。
 
 **三层测试**：
 
@@ -364,10 +364,10 @@ CRC 字节在文件里写成实际值，不写 `CRC16` 占位——向量必须�
 
 一张票算完成，需要同时满足：
 
-* `cmake --build` 无警告（`-Wall -Wextra -Werror`，MSVC 用 `/W4 /WX`）；
+* 运行 `tools/check.ps1`。它执行 `cmake --build` 再执行 `ctest`，警告即失败（`-Wall -Wextra -Werror`，MSVC 用 `/W4 /WX`）。推送和拉取请求由 GitHub Actions 跑同一脚本；
 * 新增行为有对应单测，且失败时给出可读断言信息；
 * 若行为在规范中有对应条款，向量表里有一行指向该条款；
-* 不引入 `malloc`、全局变量、时钟调用（CI 里用 `tools/check-no-alloc.ps1` 之类的文本检查兜底）。
+* 不引入 `malloc`、全局变量、时钟调用。
 
 ## 11 不做清单
 

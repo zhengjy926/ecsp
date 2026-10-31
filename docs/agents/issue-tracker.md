@@ -33,6 +33,8 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --comments`.
 
+When the body says `Part of #<n>`, fetch issue `<n>` as well and read its Testing Decisions before adding tests. Put the new tests on the seam that section names.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
