@@ -1,0 +1,11 @@
+#!/bin/sh
+# Repo check before commit. Install with: powershell -File tools/install-hooks.ps1
+root=$(git rev-parse --show-toplevel) || exit 1
+if command -v powershell.exe >/dev/null 2>&1; then
+  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$root/tools/check.ps1"
+fi
+if command -v pwsh >/dev/null 2>&1; then
+  exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$root/tools/check.ps1"
+fi
+echo "pre-commit: need powershell.exe or pwsh to run tools/check.ps1" >&2
+exit 1

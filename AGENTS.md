@@ -23,3 +23,7 @@ Source tree and the virtual-link seam: `docs/specs/ecsp-impl-spec.md` sections 2
 ### Board commands
 
 Codes 0x30-0xEF: the command table lives in `board/<board>/`, and `src/ecsp/` stays free of those semantics. `tools/new-board-spec.ps1` writes `docs/specs/boards/`.
+
+### Coding standards
+
+Judgement calls for review: `CODING_STANDARDS.md`.

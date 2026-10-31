@@ -17,6 +17,10 @@
  * What it misses: two rejection reasons on one frame (that stays on the
  * slave-pipeline seam) and a CRC byte that is 0xFA (that stays on the
  * vector seam).
+ *
+ * Inject: raw bytes into the slave only update the host session axis after
+ * a host step. When the host transaction is not idle, make the slave busy
+ * by inject — do not submit.
  */
 
 #include "ecsp/ecsp.h"
