@@ -59,7 +59,6 @@ HAL_OBJS := \
   $(BUILD)/stm32f4xx_hal_cortex.o \
   $(BUILD)/stm32f4xx_hal_rcc.o \
   $(BUILD)/stm32f4xx_hal_rcc_ex.o \
-  $(BUILD)/stm32f4xx_hal_gpio.o \
   $(BUILD)/stm32f4xx_hal_flash.o \
   $(BUILD)/stm32f4xx_hal_flash_ex.o \
   $(BUILD)/stm32f4xx_hal_pwr.o \
@@ -127,8 +126,6 @@ $(BUILD)/stm32f4xx_hal_cortex.o: $(DRIVERS)/STM32F4xx_HAL_Driver/Src/stm32f4xx_h
 $(BUILD)/stm32f4xx_hal_rcc.o: $(DRIVERS)/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c | $(BUILD)
 	$(CC) $(HAL_CFLAGS) -c $< -o $@
 $(BUILD)/stm32f4xx_hal_rcc_ex.o: $(DRIVERS)/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c | $(BUILD)
-	$(CC) $(HAL_CFLAGS) -c $< -o $@
-$(BUILD)/stm32f4xx_hal_gpio.o: $(DRIVERS)/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c | $(BUILD)
 	$(CC) $(HAL_CFLAGS) -c $< -o $@
 $(BUILD)/stm32f4xx_hal_flash.o: $(DRIVERS)/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c | $(BUILD)
 	$(CC) $(HAL_CFLAGS) -c $< -o $@

@@ -40,7 +40,6 @@ void usart_init(usart_rx_fn on_rx)
     LL_USART_EnableIT_RXNE(USART1);
     LL_USART_Enable(USART1);
 
-    NVIC_SetPriority(USART1_IRQn, 5u);
     NVIC_EnableIRQ(USART1_IRQn);
 }
 

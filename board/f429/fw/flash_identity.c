@@ -66,11 +66,6 @@ static int slot_erased(const identity_record_t *rec)
     return 1;
 }
 
-static uint32_t next_seq(uint32_t prev)
-{
-    return prev + 1u;
-}
-
 static int program_record(uint32_t addr, const identity_record_u *rec)
 {
     size_t i;
@@ -183,7 +178,7 @@ int flash_identity_commit(const ecsp_slave_identity_t *next)
     }
 
     rec.r.magic = IDENTITY_MAGIC;
-    rec.r.seq = (have_seq != 0) ? next_seq(last_seq) : 1u;
+    rec.r.seq = (have_seq != 0) ? (last_seq + 1u) : 1u;
     memcpy(rec.r.hw, next->hardware_version.b, ECSP_VERSION_LEN);
     rec.r.pad = 0u;
     memcpy(rec.r.serial, next->serial_number.b, ECSP_SERIAL_LEN);

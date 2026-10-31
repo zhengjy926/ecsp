@@ -27,7 +27,8 @@ static uint8_t g_rx[ECSP_MAX_FRAME * 2u];
 static uint8_t g_tx[ECSP_MAX_FRAME * 2u];
 static ecsp_slave_t g_slave;
 static ecsp_slave_identity_t g_identity;
-static uint8_t g_chip_id[F429_CHIP_ID_LEN];
+static uint8_t g_chip_id[UID_LEN];
+typedef char chip_id_len_ok[(UID_LEN == F429_CHIP_ID_LEN) ? 1 : -1];
 
 static volatile uint8_t g_tick;
 
