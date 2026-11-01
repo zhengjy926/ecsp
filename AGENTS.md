@@ -27,7 +27,3 @@ Codes 0x30-0xEF: the command table lives in `board/<board>/`, and `src/ecsp/` st
 ### Coding standards
 
 Judgement calls for review: `CODING_STANDARDS.md`.
-
-### Product wiring guide
-
-`README.md` is how a product wires the library. When a public function name, signature, configuration field, caller-facing macro, or the described wiring changes, update `README.md` in the same change. Timeouts, which frames are sent, and what a callback receives stay in step with the implementation.

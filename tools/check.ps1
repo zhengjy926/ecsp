@@ -5,7 +5,9 @@
 .DESCRIPTION
   First checks that tools/new-board-spec.ps1 can still find every anchor
   in docs/specs/ecsp-spec.md, then that board specs do not invent hardware
-  tokens inside common-command sections. Then configures build/ on first
+  tokens or restated common-command prose, then that README.md C examples
+  only name cfg fields and ecsp_* symbols the public headers declare.
+  Then configures build/ on first
   use, cmake --build, and ctest. After ctest, tools/check-f429-fw.ps1
   cross-builds board/f429/fw when arm-none-eabi-gcc is on PATH (skips
   otherwise; CI does not require that toolchain).
@@ -24,6 +26,9 @@ $root = Split-Path -Parent $PSScriptRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-board-common-drift.ps1')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-readme-api.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $build = Join-Path $root 'build'

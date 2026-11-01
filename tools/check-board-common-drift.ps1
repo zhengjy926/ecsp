@@ -1,7 +1,8 @@
 ﻿<#
 .SYNOPSIS
   Fail when a board spec invents hardware detail inside a common-command section,
-  or restates chapter 7 timing tables that no longer match the common spec.
+  restates a common-command section that has diverged, or restates chapter 7
+  timing tables that no longer match the common spec.
 
 .DESCRIPTION
   For each docs/specs/boards/*-spec.md, walk 5.2.1 .. 5.2.18. Any
@@ -9,6 +10,12 @@
   section but not in the matching section of docs/specs/ecsp-spec.md is drift:
   link semantics stay in the common spec; board files only override what the
   board owns.
+
+  A 5.2.n section that is not identical to the common spec must cite
+  docs/specs/ecsp-spec.md. Any other sentence must still appear in that
+  common section, or be a board override (it contains 本板 or 上电). A
+  sentence the common section no longer has, such as a copied error-handling
+  line, fails.
 
   A board spec that says it does not override chapter 7 must keep 表 7-1 and
   表 7-4 identical to the common spec. Exit 0 when clean.
@@ -108,6 +115,46 @@ function Get-TimingTableMismatches {
     return @($bad)
 }
 
+function Get-NormText {
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    return (($Text -replace '\s+', ' ').Trim())
+}
+
+function Get-Clauses {
+    param([string]$Body)
+    $out = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrEmpty($Body)) { return $out }
+    foreach ($part in ([regex]::Split($Body, '[。\n]'))) {
+        $clause = ($part -replace '\s+', ' ').Trim().TrimStart('*', ' ', '-', '>')
+        if ($clause.Length -ge 4) {
+            $out.Add($clause) | Out-Null
+        }
+    }
+    return $out
+}
+
+# Empty when the section is identical, or it points at the common spec and
+# keeps only sentences that spec still has plus a 本板/上电 override.
+function Get-ForkProblems {
+    param([string]$BoardBody, [string]$CommonBody)
+    $problems = New-Object System.Collections.Generic.List[string]
+    $boardNorm = Get-NormText $BoardBody
+    $commonNorm = Get-NormText $CommonBody
+    if ($boardNorm -eq $commonNorm) { return $problems }
+    if ($boardNorm.IndexOf('docs/specs/ecsp-spec.md') -lt 0) {
+        $problems.Add('section differs and does not cite docs/specs/ecsp-spec.md') | Out-Null
+    }
+    foreach ($clause in (Get-Clauses $BoardBody)) {
+        if ($commonNorm.IndexOf($clause) -ge 0) { continue }
+        if ($clause.IndexOf('docs/specs/ecsp-spec.md') -ge 0) { continue }
+        if ($clause.IndexOf('本板') -ge 0) { continue }
+        if ($clause.IndexOf('上电') -ge 0) { continue }
+        $problems.Add($clause) | Out-Null
+    }
+    return $problems
+}
+
 function Get-TokenHits {
     param([string]$Body)
     $hits = New-Object System.Collections.Generic.List[string]
@@ -148,6 +195,11 @@ foreach ($board in $boardFiles) {
             Write-Host ("FAIL {0}: has {1} but common spec does not" -f $board.Name, $title.Trim())
             $failed = 1
             continue
+        }
+        $fork = @(Get-ForkProblems $boardBody $commonBody)
+        if ($fork.Count -gt 0) {
+            Write-Host ("FAIL {0} {1}: {2}" -f $board.Name, $title.Trim(), ($fork -join ' | '))
+            $failed = 1
         }
         $boardHits = @(Get-TokenHits $boardBody)
         if ($boardHits.Count -eq 0) { continue }
@@ -220,5 +272,23 @@ if ($same.Count -ne 0) {
     exit 1
 }
 
-Write-Host 'board-spec common-command drift: OK (self-test: board-only Sleep is rejected; a changed table 7-1 is rejected)'
+$heading15 = Find-Heading $commonText '5.2.15 '
+$common15 = $null
+if ($null -ne $heading15) { $common15 = Get-SectionBody $commonText $heading15 }
+if ($null -eq $common15 -or $common15.IndexOf('错误处理同 5.2.3') -ge 0) {
+    Write-Host 'FAIL board-spec drift self-test: common 5.2.15 still contains the retired error-handling sentence'
+    exit 1
+}
+$stale = @(Get-ForkProblems ($common15 + "`n错误处理同 5.2.3 节。`n") $common15)
+if ($stale.Count -eq 0) {
+    Write-Host 'FAIL board-spec drift self-test: a retired 5.2.15 sentence was accepted'
+    exit 1
+}
+$pointerOk = @(Get-ForkProblems "链路语义见 docs/specs/ecsp-spec.md 的 5.2.15。本板上电为开启。" '别的正文')
+if ($pointerOk.Count -ne 0) {
+    Write-Host 'FAIL board-spec drift self-test: a pointer plus a board override was rejected'
+    exit 1
+}
+
+Write-Host 'board-spec common-command drift: OK (self-test: board-only Sleep is rejected; a changed table 7-1 is rejected; a retired 5.2.15 sentence is rejected)'
 exit 0

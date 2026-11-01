@@ -6,10 +6,10 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`. The body is `.body`, comments are `.comments[].body`, and labels are `.labels[].name`.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **List issues**: `gh issue list --state open --json number,title,state` with appropriate `--label` and `--state` filters. Fetch a body with `gh issue view` only for the parent and the tickets on the frontier.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+- **Close**: `gh issue close <number> --comment "..."` only when a commit that resolves the issue is an ancestor of the default branch (`git merge-base --is-ancestor <commit> main`). Until then, report the integration branch and leave the issue open.
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
