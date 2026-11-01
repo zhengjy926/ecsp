@@ -183,8 +183,9 @@ void ecsp_slave_rx(ecsp_slave_t *s, const uint8_t *data, size_t len);
 void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms);
 
 /* Last low-power mode accepted by 0x0B (ECSP_LOW_POWER_EXIT /
- * ECSP_LOW_POWER_ENTER, spec 5.2.11). Enter suppresses heartbeats and held
- * active reports until exit or an accepted handshake; the product also
+ * ECSP_LOW_POWER_ENTER, spec 5.2.11). Enter suppresses heartbeats until
+ * exit or an accepted handshake, and holds active reports. An exit while
+ * 上传模式 is off does not flush those held reports. The product also
  * reads this to drive hardware sleep. Returns EXIT for a NULL context. */
 uint8_t ecsp_slave_low_power_mode(const ecsp_slave_t *s);
 

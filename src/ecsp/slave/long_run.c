@@ -289,6 +289,15 @@ void ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn)
     s->safe_abort = fn;
 }
 
+/* A one-shot low power was holding never reached the transmit FIFO.
+ * Leaving while 上传模式 is off must not flush 0x0A, 0x0E, or 0x11
+ * (spec 5.2.15). The stored result and the fault word stay readable. */
+void ecsp_long_run_drop_held(ecsp_slave_t *s)
+{
+    s->lr_event_pending = 0u;
+    s->fault_report_pending = 0u;
+}
+
 void ecsp_long_run_flush(ecsp_slave_t *s, uint32_t now_ms,
                          ecsp_long_run_emit_t emit)
 {

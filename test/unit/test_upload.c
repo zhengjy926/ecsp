@@ -71,6 +71,29 @@ static const uint8_t heartbeat_frame[] = {
     0xFA, 0x09, 0x00, 0x03, 0x10, 0x02, 0x84, 0x00, 0x0D
 };
 
+/* spec 5.2.11: enter and exit both answer 0x00. CRC over 0A 00 03 0B 02 00
+ * is 0x5770. */
+static const uint8_t low_power_ok[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x0B, 0x02, 0x00, 0x70, 0x57, 0x0D
+};
+
+/* spec 5.2.9: 0x00 plus result 0x20. CRC over 0B 00 03 09 02 00 20 is 0x4446. */
+static const uint8_t get_selftest_failed[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x09, 0x02, 0x00, 0x20, 0x46, 0x44, 0x0D
+};
+
+/* spec 5.2.9: 0x13, no result byte. CRC over 0A 00 03 09 02 13 is 0x5A90. */
+static const uint8_t get_selftest_none[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x09, 0x02, 0x13, 0x90, 0x5A, 0x0D
+};
+
+/* spec 5.2.6 answer for serial "SN0000000000". */
+static const uint8_t serial_get_resp[] = {
+    0xFA, 0x16, 0x00, 0x03, 0x06, 0x02, 0x00,
+    0x53, 0x4E, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0xCC, 0x72, 0x0D
+};
+
 /* spec 5.2.1 / 5.2.2 bring-up, and spec 5.2.8 accept with T_exec_max 2000. */
 static const uint8_t handshake_resp[] = {
     0xFA, 0x0A, 0x00, 0x03, 0x01, 0x02, 0x00, 0x50, 0x55, 0x0D
@@ -103,7 +126,7 @@ static void drain(void)
     ecsp_slave_tx_drain(&g_slave, ecsp_slave_tx_pending(&g_slave));
 }
 
-static void init_slave_mode(uint8_t upload_mode)
+static void init_slave_cap(uint8_t upload_mode, size_t tx_cap)
 {
     ecsp_slave_cfg_t cfg;
     static const uint8_t ver[7] = { '1', '.', '0', '.', '0', '.', '0' };
@@ -125,8 +148,13 @@ static void init_slave_mode(uint8_t upload_mode)
     cfg.rx_buf = g_rx;
     cfg.rx_cap = sizeof g_rx;
     cfg.tx_buf = g_tx;
-    cfg.tx_cap = sizeof g_tx;
+    cfg.tx_cap = tx_cap;
     CHECK_EQ(ECSP_OK, ecsp_slave_init(&g_slave, &cfg));
+}
+
+static void init_slave_mode(uint8_t upload_mode)
+{
+    init_slave_cap(upload_mode, sizeof g_tx);
 }
 
 static void init_slave(void)
@@ -156,6 +184,17 @@ static void expect_frame(const uint8_t *frame, size_t n)
 static void expect_nothing(void)
 {
     CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+}
+
+static void expect_two(const uint8_t *first, size_t first_len,
+                       const uint8_t *second, size_t second_len)
+{
+    uint8_t both[2u * ECSP_MAX_FRAME];
+
+    CHECK(first_len + second_len <= sizeof both);
+    memcpy(both, first, first_len);
+    memcpy(both + first_len, second, second_len);
+    expect_frame(both, first_len + second_len);
 }
 
 static void handshake(void)
@@ -540,6 +579,8 @@ static void init_host(void)
     cfg.tx_cap = sizeof g_host_tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
+    cfg.board_cmds = NULL;
+    cfg.board_cmd_count = 0u;
     CHECK_EQ(ECSP_OK, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -593,6 +634,332 @@ static void test_upload_silence_ceiling_is_50ms(void)
     host_step(sent + 3000u);
     expect_host_nothing();
     CHECK_EQ(1, g_txn_calls);
+}
+
+/* An accepted handshake puts 上传模式 back on the configured power-up
+ * value. A 0x0A that became ready while the mode was off stays out of the
+ * transmit FIFO; 0x09 still returns it. The next result is sent, because
+ * that power-up value is on. */
+static void test_handshake_restores_power_up_on_without_replaying(void)
+{
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+
+    init_slave_mode(ECSP_UPLOAD_ON);
+    handshake();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+
+    finish_selftest_ok();
+    expect_nothing();
+
+    send_at(ECSP_CMD_HANDSHAKE, NULL, 0u, 0u);
+    expect_frame(handshake_resp, sizeof handshake_resp);
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, 0u);
+    expect_frame(get_selftest_ok, sizeof get_selftest_ok);
+
+    finish_selftest_ok();
+    expect_frame(selftest_report_ok, sizeof selftest_report_ok);
+}
+
+/* Power-up off: an accepted handshake turns 上传模式 back off, so the
+ * next result event is not sent. */
+static void test_handshake_restores_power_up_off(void)
+{
+    static const uint8_t on[1] = { ECSP_CTRL_UPLOAD_ON };
+
+    init_slave_mode(ECSP_UPLOAD_OFF);
+    handshake();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, on, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+
+    finish_selftest_ok();
+    expect_frame(selftest_report_ok, sizeof selftest_report_ok);
+
+    send_at(ECSP_CMD_HANDSHAKE, NULL, 0u, 0u);
+    expect_frame(handshake_resp, sizeof handshake_resp);
+    finish_selftest_ok();
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, 0u);
+    expect_frame(get_selftest_ok, sizeof get_selftest_ok);
+}
+
+/* A 0x0A latched while 低功耗 was holding reports is not flushed by 0x0B
+ * when 上传模式 is still off. The result stays readable, and the heartbeat
+ * follows the low-power rule: silent while entered, due again one period
+ * after the exit answer. */
+static void test_exit_low_power_while_upload_off_does_not_flush_report(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t leave[1] = { ECSP_LOW_POWER_EXIT };
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+    static const uint8_t on[1] = { ECSP_CTRL_UPLOAD_ON };
+    uint32_t left = 100u;
+
+    init_slave();
+    handshake();
+    send_at(ECSP_CMD_SET_LOW_POWER, enter, 1u, 0u);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+
+    finish_selftest_ok();
+    expect_nothing();
+
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+
+    send_at(ECSP_CMD_SET_LOW_POWER, leave, 1u, left);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+    ecsp_slave_step(&g_slave, left);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, left);
+    expect_frame(get_selftest_ok, sizeof get_selftest_ok);
+
+    ecsp_slave_step(&g_slave, left + 999u);
+    expect_nothing();
+    ecsp_slave_step(&g_slave, left + 1000u);
+    expect_frame(heartbeat_frame, sizeof heartbeat_frame);
+
+    send_at(ECSP_CMD_CONTROL_UPLOAD, on, 1u, left + 1000u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    ecsp_slave_step(&g_slave, left + 1000u);
+    expect_nothing();
+}
+
+/* A 0x11 latched while 低功耗 was holding reports is not flushed by 0x0B
+ * when 上传模式 is still off. 0x12 still returns the fault word. */
+static void test_exit_low_power_while_upload_off_does_not_flush_fault(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t leave[1] = { ECSP_LOW_POWER_EXIT };
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+    uint8_t start[2] = { 0x01u, ECSP_CTRL_START };
+    uint32_t left = 100u;
+
+    init_slave();
+    handshake();
+    send_at(ECSP_CMD_SET_LOW_POWER, enter, 1u, 0u);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+
+    send_at(ECSP_CMD_CONTROL_SELFTEST, start, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_FAILED));
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+
+    send_at(ECSP_CMD_SET_LOW_POWER, leave, 1u, left);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+    ecsp_slave_step(&g_slave, left);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_FAULT, NULL, 0u, left);
+    expect_frame(fault_query_bit0, sizeof fault_query_bit0);
+}
+
+/* Turning 上传模式 back on does not emit 0x0A, 0x0E, or 0x11 that became
+ * ready while it was off. 0x09, 0x0D, and 0x12 still return them. */
+static void test_turn_on_does_not_replay_missed_one_shots(void)
+{
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+    static const uint8_t on[1] = { ECSP_CTRL_UPLOAD_ON };
+    uint8_t upgrade[2] = { 0x01u, ECSP_CTRL_START };
+    uint8_t selftest[2] = { 0x02u, ECSP_CTRL_START };
+
+    init_slave();
+    handshake();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+
+    send_at(ECSP_CMD_START_UPGRADE, upgrade, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_CONTROL_SELFTEST, selftest, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_FAILED));
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_CONTROL_UPLOAD, on, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_UPGRADE, NULL, 0u, 0u);
+    expect_frame(get_upgrade_ok, sizeof get_upgrade_ok);
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, 0u);
+    expect_frame(get_selftest_failed, sizeof get_selftest_failed);
+    send_at(ECSP_CMD_GET_FAULT, NULL, 0u, 0u);
+    expect_frame(fault_query_bit0, sizeof fault_query_bit0);
+}
+
+/* 0x0A, 0x0E, and 0x11 that became ready while 上传模式 was off are not
+ * flushed by leaving 低功耗. Heartbeats stay silent during 低功耗 and
+ * resume one period after the exit answer. */
+static void test_leave_low_power_while_upload_stays_off(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t leave[1] = { ECSP_LOW_POWER_EXIT };
+    static const uint8_t on[1] = { ECSP_CTRL_UPLOAD_ON };
+    uint8_t upgrade[2] = { 0x01u, ECSP_CTRL_START };
+    uint8_t selftest[2] = { 0x02u, ECSP_CTRL_START };
+    uint32_t left = 200u;
+
+    init_slave_mode(ECSP_UPLOAD_OFF);
+    handshake();
+    send_at(ECSP_CMD_SET_LOW_POWER, enter, 1u, 0u);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+
+    ecsp_slave_step(&g_slave, 1000u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_START_UPGRADE, upgrade, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_CONTROL_SELFTEST, selftest, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_FAILED));
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_SET_LOW_POWER, leave, 1u, left);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+    ecsp_slave_step(&g_slave, left + 999u);
+    expect_nothing();
+    ecsp_slave_step(&g_slave, left + 1000u);
+    expect_frame(heartbeat_frame, sizeof heartbeat_frame);
+
+    send_at(ECSP_CMD_CONTROL_UPLOAD, on, 1u, left + 1000u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    ecsp_slave_step(&g_slave, left + 1000u);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_UPGRADE, NULL, 0u, left + 1000u);
+    expect_frame(get_upgrade_ok, sizeof get_upgrade_ok);
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, left + 1000u);
+    expect_frame(get_selftest_failed, sizeof get_selftest_failed);
+    send_at(ECSP_CMD_GET_FAULT, NULL, 0u, left + 1000u);
+    expect_frame(fault_query_bit0, sizeof fault_query_bit0);
+}
+
+/* 低功耗 keeps suppressing heartbeats while 上传模式 is on. */
+static void test_low_power_suppresses_heartbeats_while_upload_on(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+
+    init_slave();
+    handshake();
+    send_at(ECSP_CMD_SET_LOW_POWER, enter, 1u, 0u);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+
+    ecsp_slave_step(&g_slave, 1000u);
+    expect_nothing();
+    ecsp_slave_step(&g_slave, 2000u);
+    expect_nothing();
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+}
+
+/* Handshake still leaves 低功耗 and still emits no result event for the
+ * in-flight long-running command it interrupted. */
+static void test_handshake_leaves_low_power_without_result_event(void)
+{
+    static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+    uint8_t start[2] = { 0x01u, ECSP_CTRL_START };
+    uint32_t resumed = 1500u;
+
+    init_slave();
+    handshake();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    send_at(ECSP_CMD_SET_LOW_POWER, enter, 1u, 0u);
+    expect_frame(low_power_ok, sizeof low_power_ok);
+
+    send_at(ECSP_CMD_CONTROL_SELFTEST, start, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, ecsp_slave_long_run_cmd(&g_slave));
+    ecsp_slave_step(&g_slave, 1000u);
+    expect_nothing();
+    CHECK_EQ(ECSP_LOW_POWER_ENTER, ecsp_slave_low_power_mode(&g_slave));
+
+    send_at(ECSP_CMD_HANDSHAKE, NULL, 0u, resumed);
+    expect_frame(handshake_resp, sizeof handshake_resp);
+    CHECK_EQ(0u, ecsp_slave_long_run_cmd(&g_slave));
+    CHECK_EQ(ECSP_LOW_POWER_EXIT, ecsp_slave_low_power_mode(&g_slave));
+    ecsp_slave_step(&g_slave, resumed);
+    expect_nothing();
+
+    send_at(ECSP_CMD_GET_SELFTEST, NULL, 0u, resumed);
+    expect_frame(get_selftest_none, sizeof get_selftest_none);
+
+    ecsp_slave_step(&g_slave, resumed + 999u);
+    expect_nothing();
+    ecsp_slave_step(&g_slave, resumed + 1000u);
+    expect_frame(heartbeat_frame, sizeof heartbeat_frame);
+}
+
+/* Bytes already in the transmit FIFO stay there when 0x0F turns upload off. */
+static void test_queued_report_is_not_withdrawn_when_upload_turns_off(void)
+{
+    static const uint8_t off[1] = { ECSP_CTRL_UPLOAD_OFF };
+
+    init_slave();
+    handshake();
+    finish_selftest_ok();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, off, 1u, 0u);
+    expect_two(selftest_report_ok, sizeof selftest_report_ok,
+               upload_off_frame, sizeof upload_off_frame);
+    ecsp_slave_step(&g_slave, 0u);
+    expect_nothing();
+}
+
+/* A result the FIFO could not take is sent on a later step, and still sent
+ * when that later step is a handshake that restores power-up off. */
+static void test_fifo_full_report_is_sent_later_including_after_handshake(void)
+{
+    static const uint8_t on[1] = { ECSP_CTRL_UPLOAD_ON };
+    uint8_t start[2] = { 0x01u, ECSP_CTRL_START };
+    size_t one_answer = ECSP_FRAME_MIN_LEN + 1u + ECSP_SERIAL_LEN;
+
+    init_slave_cap(ECSP_UPLOAD_ON, one_answer);
+    handshake();
+    send_at(ECSP_CMD_CONTROL_SELFTEST, start, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+    send_at(ECSP_CMD_GET_SERIAL, NULL, 0u, 0u);
+    expect_frame(serial_get_resp, sizeof serial_get_resp);
+    ecsp_slave_step(&g_slave, 0u);
+    expect_frame(selftest_report_ok, sizeof selftest_report_ok);
+
+    init_slave_cap(ECSP_UPLOAD_OFF, one_answer);
+    handshake();
+    send_at(ECSP_CMD_CONTROL_UPLOAD, on, 1u, 0u);
+    expect_frame(upload_off_frame, sizeof upload_off_frame);
+    send_at(ECSP_CMD_CONTROL_SELFTEST, start, 2u, 0u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+    send_at(ECSP_CMD_GET_SERIAL, NULL, 0u, 0u);
+    expect_frame(serial_get_resp, sizeof serial_get_resp);
+
+    send_at(ECSP_CMD_HANDSHAKE, NULL, 0u, 0u);
+    expect_two(handshake_resp, sizeof handshake_resp,
+               selftest_report_ok, sizeof selftest_report_ok);
 }
 
 /* After 0x0F, a long-running accept still waits T_exec_max before 0x09. */
@@ -658,6 +1025,16 @@ int main(void)
     test_upload_while_busy_is_rejected();
     test_upload_does_not_commit_identity();
     test_upload_silence_ceiling_is_50ms();
+    test_handshake_restores_power_up_on_without_replaying();
+    test_handshake_restores_power_up_off();
+    test_exit_low_power_while_upload_off_does_not_flush_report();
+    test_exit_low_power_while_upload_off_does_not_flush_fault();
+    test_turn_on_does_not_replay_missed_one_shots();
+    test_leave_low_power_while_upload_stays_off();
+    test_low_power_suppresses_heartbeats_while_upload_on();
+    test_handshake_leaves_low_power_without_result_event();
+    test_queued_report_is_not_withdrawn_when_upload_turns_off();
+    test_fifo_full_report_is_sent_later_including_after_handshake();
     test_host_still_waits_exec_max_after_upload_off();
     return ecsp_test_report();
 }

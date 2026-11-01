@@ -85,8 +85,11 @@ static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
      * handshake is still answered 0x00: a failed safe-abort latches the fault
      * bit but does not refuse the host's restart. Already-ready stays ready
      * and does not resume the 0x01 report (spec 4.1.4, 5.2.1). An accepted
-     * handshake also leaves low power (spec 5.2.11). */
+     * handshake also leaves low power (spec 5.2.11) and puts 上传模式 back
+     * on the configured power-up value (spec 5.2.15). A one-shot that was
+     * never queued while the mode was off stays unqueued. */
     ecsp_long_run_on_handshake(s);
+    s->upload_on = (s->cfg.upload_mode == ECSP_UPLOAD_ON) ? 1u : 0u;
     s->low_power_mode = ECSP_LOW_POWER_EXIT;
     s->pending_ready = 1u;
     return ECSP_RS_OK;
@@ -212,10 +215,19 @@ static int h_long_query(ecsp_slave_t *s, const ecsp_frame_t *req,
 static int h_set_low_power(ecsp_slave_t *s, const ecsp_frame_t *req,
                            uint8_t *resp, size_t cap, size_t *resp_len)
 {
+    uint8_t mode = req->payload[0];
+
     (void)resp;
     (void)cap;
     *resp_len = 0u;
-    s->low_power_mode = req->payload[0];
+    /* spec 5.2.15: 低功耗 holds a ready one-shot, but an exit while
+     * 上传模式 is still off does not flush it. Upload on still does. */
+    if ((s->low_power_mode == ECSP_LOW_POWER_ENTER) &&
+        (mode == ECSP_LOW_POWER_EXIT) &&
+        (s->upload_on == 0u)) {
+        ecsp_long_run_drop_held(s);
+    }
+    s->low_power_mode = mode;
     return ECSP_RS_OK;
 }
 
