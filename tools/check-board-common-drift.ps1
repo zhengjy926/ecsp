@@ -1,13 +1,17 @@
 ﻿<#
 .SYNOPSIS
-  Fail when a board spec invents hardware detail inside a common-command section.
+  Fail when a board spec invents hardware detail inside a common-command section,
+  or restates chapter 7 timing tables that no longer match the common spec.
 
 .DESCRIPTION
   For each docs/specs/boards/*-spec.md, walk 5.2.1 .. 5.2.18. Any
   hardware token (Sleep, Stop, USARTn, PAx, …) that appears in the board
   section but not in the matching section of docs/specs/ecsp-spec.md is drift:
   link semantics stay in the common spec; board files only override what the
-  board owns. Exit 0 when clean.
+  board owns.
+
+  A board spec that says it does not override chapter 7 must keep 表 7-1 and
+  表 7-4 identical to the common spec. Exit 0 when clean.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -59,6 +63,51 @@ function Get-SectionBody {
     return $rest
 }
 
+function Get-MarkdownTable {
+    param([string]$Doc, [string]$Marker)
+    $i = $Doc.IndexOf($Marker)
+    if ($i -lt 0) { return $null }
+    $started = $false
+    $rows = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($Doc.Substring($i + $Marker.Length) -split "`n")) {
+        $cell = $line.Trim()
+        if (-not $started) {
+            if ($cell -match '^\|') {
+                $started = $true
+                $rows.Add($cell) | Out-Null
+            } elseif ($cell -ne '') {
+                return $null
+            }
+            continue
+        }
+        if ($cell -match '^\|') {
+            $rows.Add($cell) | Out-Null
+        } else {
+            break
+        }
+    }
+    if ($rows.Count -eq 0) { return $null }
+    return ($rows -join "`n")
+}
+
+function Get-TimingTableMismatches {
+    param([string]$Common, [string]$Board)
+    $captions = @(
+        '表 7-1 命令响应时间要求',
+        '表 7-4 ECSP 默认值与覆盖规则'
+    )
+    $bad = New-Object System.Collections.Generic.List[string]
+    foreach ($caption in $captions) {
+        $marker = '**' + $caption + '**'
+        $commonTable = Get-MarkdownTable $Common $marker
+        $boardTable = Get-MarkdownTable $Board $marker
+        if ($null -eq $commonTable -or $null -eq $boardTable -or $commonTable -ne $boardTable) {
+            $bad.Add($caption) | Out-Null
+        }
+    }
+    return @($bad)
+}
+
 function Get-TokenHits {
     param([string]$Body)
     $hits = New-Object System.Collections.Generic.List[string]
@@ -79,6 +128,14 @@ if (Test-Path -LiteralPath $boardsDir) {
 
 foreach ($board in $boardFiles) {
     $boardText = (Get-Content -LiteralPath $board.FullName -Raw -Encoding UTF8) -replace "`r`n", "`n"
+    if ($boardText -match '不覆盖第 7 章') {
+        $timing = @(Get-TimingTableMismatches $commonText $boardText)
+        if ($timing.Count -gt 0) {
+            Write-Host ("FAIL {0}: chapter 7 is not an override, but these tables differ from the common spec: {1}" -f `
+                $board.Name, ($timing -join ', '))
+            $failed = 1
+        }
+    }
     for ($n = 1; $n -le 18; $n++) {
         $title = "5.2.$n "
         $heading = Find-Heading $boardText $title
@@ -146,5 +203,22 @@ if ($null -ne $boardProbe) {
     }
 }
 
-Write-Host 'board-spec common-command drift: OK (self-test: board-only Sleep is rejected)'
+$table71 = Get-MarkdownTable $commonText '**表 7-1 命令响应时间要求**'
+if ($null -eq $table71 -or $table71.IndexOf('≤50 ms') -lt 0) {
+    Write-Host 'FAIL board-spec drift self-test: common spec table 7-1 has no ≤50 ms cell to mutate'
+    exit 1
+}
+$mutated = $commonText.Replace($table71, $table71.Replace('≤50 ms', '≤99 ms'))
+$timingProbe = @(Get-TimingTableMismatches $commonText $mutated)
+if ($timingProbe -notcontains '表 7-1 命令响应时间要求') {
+    Write-Host 'FAIL board-spec drift self-test: a changed table 7-1 was accepted'
+    exit 1
+}
+$same = @(Get-TimingTableMismatches $commonText $commonText)
+if ($same.Count -ne 0) {
+    Write-Host 'FAIL board-spec drift self-test: identical chapter 7 tables were reported as drift'
+    exit 1
+}
+
+Write-Host 'board-spec common-command drift: OK (self-test: board-only Sleep is rejected; a changed table 7-1 is rejected)'
 exit 0

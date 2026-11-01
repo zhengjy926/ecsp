@@ -123,7 +123,18 @@ $anchors = @(Get-RequiredAnchors)
 if ($CheckAnchors) {
     $missing = @(Get-MissingAnchorLabels $text $anchors)
     if ($missing.Count -gt 0) {
-        Write-Host ('FAIL board-spec anchors missing: ' + ($missing -join ', '))
+        foreach ($label in $missing) {
+            $expected = $null
+            foreach ($a in $anchors) {
+                if ([string]$a.Label -eq [string]$label) { $expected = [string]$a.Old }
+            }
+            if ($null -eq $expected) {
+                Write-Host ("FAIL board-spec anchor [{0}] not in the common spec. Expected a revision row: | V<x.y> | YYYY-MM-DD |" -f $label)
+            } else {
+                Write-Host ("FAIL board-spec anchor [{0}] not in the common spec. Expected:" -f $label)
+                Write-Host $expected
+            }
+        }
         exit 1
     }
     $anchor11 = $null

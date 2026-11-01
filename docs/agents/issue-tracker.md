@@ -33,7 +33,7 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --json number,title,body,labels,comments`.
 
-When the body says `Part of #<n>`, fetch issue `<n>` as well and read its Testing Decisions before adding tests. Put the new tests on the seam that section names.
+When the body has a `## Parent` section that references `#<n>`, or a `Part of #<n>` line, fetch issue `<n>` as well and read its Testing Decisions before adding tests. Put the new tests on the seam that section names. `## Parent` is how `/to-tickets` points at a `/to-spec` parent. `Part of #<n>` is how `/wayfinder` points at its map.
 
 ## Wayfinding operations
 
