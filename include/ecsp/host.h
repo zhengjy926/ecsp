@@ -104,9 +104,10 @@ typedef struct {
 } ecsp_host_slave_cfg_t;
 
 /* Caller-owned buffers (ADR-0005). `slaves` is copied at init and need not
- * outlive it. `on_event` may be NULL. `board_cmds` is not copied: NULL means
- * every board command waits the 50 ms default, and a non-NULL table must
- * outlive the host. The host reads cmd and resp_ms only. */
+ * outlive it. `on_event` may be NULL. `board_cmds` is one table: the entry
+ * array is not copied, and a NULL table means every board command waits the
+ * 50 ms default. A non-NULL table must outlive the host. The host reads cmd
+ * and resp_ms only. */
 typedef struct {
     uint8_t product_addr;
     const ecsp_host_slave_cfg_t *slaves;
@@ -117,8 +118,7 @@ typedef struct {
     size_t   tx_cap;
     ecsp_host_event_cb_t on_event;
     void *user;
-    const ecsp_cmd_entry_t *board_cmds;
-    size_t board_cmd_count;
+    ecsp_cmd_table_t board_cmds;
 } ecsp_host_cfg_t;
 
 /* Private per-slave slot. Stack allocation needs the layout here; callers

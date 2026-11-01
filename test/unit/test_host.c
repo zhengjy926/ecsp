@@ -107,8 +107,8 @@ static uint8_t *g_tx_use;
 static size_t g_tx_cap;
 static ecsp_host_t g_host;
 static ecsp_host_slave_cfg_t g_slaves[2];
-static const ecsp_cmd_entry_t *g_board_cmds;
-static size_t g_board_cmd_count;
+static ecsp_cmd_table_t g_board_cmds;
+static const ecsp_cmd_table_t g_no_board_cmds = { NULL, 0u };
 
 static int g_events;
 static int g_event;
@@ -396,7 +396,6 @@ static void init_host(ecsp_host_event_cb_t on_event_fn, void *user)
     cfg.on_event = on_event_fn;
     cfg.user = user;
     cfg.board_cmds = g_board_cmds;
-    cfg.board_cmd_count = g_board_cmd_count;
     CHECK_EQ(0, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -859,8 +858,7 @@ static void init_two(void)
     cfg.tx_cap = sizeof g_tx;
     cfg.on_event = on_event;
     cfg.user = NULL;
-    cfg.board_cmds = NULL;
-    cfg.board_cmd_count = 0u;
+    cfg.board_cmds = g_no_board_cmds;
     CHECK_EQ(0, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -1079,8 +1077,7 @@ static void test_callback_steps_a_different_host(void)
     cfg.tx_cap = sizeof tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
-    cfg.board_cmds = NULL;
-    cfg.board_cmd_count = 0u;
+    cfg.board_cmds = g_no_board_cmds;
     CHECK_EQ(ECSP_OK, ecsp_host_init(&peer, &cfg));
     g_peer = &peer;
 
@@ -1134,8 +1131,7 @@ static void test_two_hosts_keep_separate_fifos(void)
     ca.tx_cap = sizeof tx_a;
     ca.on_event = NULL;
     ca.user = NULL;
-    ca.board_cmds = NULL;
-    ca.board_cmd_count = 0u;
+    ca.board_cmds = g_no_board_cmds;
 
     cb.product_addr = 0x03u;
     cb.slaves = &sb;
@@ -1146,8 +1142,7 @@ static void test_two_hosts_keep_separate_fifos(void)
     cb.tx_cap = sizeof tx_b;
     cb.on_event = NULL;
     cb.user = NULL;
-    cb.board_cmds = NULL;
-    cb.board_cmd_count = 0u;
+    cb.board_cmds = g_no_board_cmds;
 
     CHECK_EQ(ECSP_OK, ecsp_host_init(&a, &ca));
     CHECK_EQ(ECSP_OK, ecsp_host_init(&b, &cb));
@@ -1654,11 +1649,11 @@ static void test_board_table_millisecond_is_the_wait(void)
     };
     uint32_t now = 20u;
 
-    g_board_cmds = table;
-    g_board_cmd_count = sizeof table / sizeof table[0];
+    g_board_cmds = (ecsp_cmd_table_t){
+        table, sizeof table / sizeof table[0]
+    };
     reach_normal();
-    g_board_cmds = NULL;
-    g_board_cmd_count = 0u;
+    g_board_cmds = g_no_board_cmds;
 
     retry_then_answer(0x32u, written, 1u, set_test_byte_req,
                       sizeof set_test_byte_req, 100u, set_test_byte_ok,
@@ -1684,11 +1679,11 @@ static void test_board_answer_before_the_ceiling_ends_the_wait(void)
     };
 
     g_txn_calls = 0;
-    g_board_cmds = table;
-    g_board_cmd_count = sizeof table / sizeof table[0];
+    g_board_cmds = (ecsp_cmd_table_t){
+        table, sizeof table / sizeof table[0]
+    };
     reach_normal();
-    g_board_cmds = NULL;
-    g_board_cmd_count = 0u;
+    g_board_cmds = g_no_board_cmds;
 
     CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, 0x32u, written, 1u,
                                       on_txn, &g_txn_marker));

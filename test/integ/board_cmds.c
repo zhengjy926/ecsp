@@ -152,8 +152,7 @@ static void init_host(void)
     cfg.tx_cap = sizeof g_host_tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
-    cfg.board_cmds = f429_board_cmds()->table;
-    cfg.board_cmd_count = f429_board_cmds()->table_len;
+    cfg.board_cmds = *f429_board_cmds();
     CHECK_EQ(ECSP_OK, ecsp_host_init(&g_host, &cfg));
 }
 

@@ -54,7 +54,9 @@ static void raise_fault_bit0(ecsp_slave_t *s)
     uint8_t raised = (uint8_t)(bits & bit_not(s->fault_word));
 
     s->fault_word = (uint8_t)(s->fault_word | bits);
-    if (raised != 0u && s->upload_on != 0u) {
+    if (raised != 0u &&
+        (s->upload_on != 0u ||
+         ecsp_catalog_upload_gated(ECSP_CMD_FAULT_REPORT) == 0)) {
         s->fault_report_word = s->fault_word;
         s->fault_report_pending = 1u;
     }
@@ -82,13 +84,16 @@ static void apply_selftest_fault(ecsp_slave_t *s, uint8_t cmd, uint8_t result)
 static void finish_running(ecsp_slave_t *s, uint8_t result)
 {
     uint8_t cmd = s->lr_cmd;
+    uint8_t event;
 
     apply_selftest_fault(s, cmd, result);
     store_result(s, cmd, 1u, result);
-    /* Off does not queue the one-shot. A frame already pending (the FIFO
-     * could not take it) keeps its command and result for a later step. */
-    if (s->upload_on != 0u) {
-        s->lr_event_cmd = event_cmd_of(cmd);
+    /* A gated event is not queued while 上传模式 is off. A frame already
+     * pending keeps its command and result for a later step. */
+    event = event_cmd_of(cmd);
+    if (event != 0u &&
+        (s->upload_on != 0u || ecsp_catalog_upload_gated(event) == 0)) {
+        s->lr_event_cmd = event;
         s->lr_event_result = result;
         s->lr_event_pending = 1u;
     }
@@ -287,15 +292,6 @@ void ecsp_slave_set_safe_abort(ecsp_slave_t *s, ecsp_slave_safe_abort_t fn)
         return;
     }
     s->safe_abort = fn;
-}
-
-/* A one-shot low power was holding never reached the transmit FIFO.
- * Leaving while 上传模式 is off must not flush 0x0A, 0x0E, or 0x11
- * (spec 5.2.15). The stored result and the fault word stay readable. */
-void ecsp_long_run_drop_held(ecsp_slave_t *s)
-{
-    s->lr_event_pending = 0u;
-    s->fault_report_pending = 0u;
 }
 
 void ecsp_long_run_flush(ecsp_slave_t *s, uint32_t now_ms,

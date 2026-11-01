@@ -7,11 +7,14 @@
  *
  * The catalog is the one place that states, for each common command, the
  * request length, the largest response data, the command class, whether the
- * payload starts with a transaction sequence, the silence ceiling, and the
- * long-running triple. The slave pipeline reads the class, the length and
- * the sequence flag. The host reads the silence ceiling and the triple, and
- * does not read the class. 0x0F is a set command: one control byte and no
- * transaction sequence. Event codes are listed and are not requests.
+ * payload starts with a transaction sequence, the silence ceiling, the
+ * long-running triple, and whether an event code is gated by 上传模式.
+ * 0x0A, 0x0E, and 0x11 are gated. 0x10 and the waiting-state 0x01 report
+ * are not. The slave pipeline reads the class, the length and the sequence
+ * flag, and asks the catalog before queueing an event. The host reads the
+ * silence ceiling and the triple, and does not read the class. 0x0F is a
+ * set command: one control byte and no transaction sequence. Event codes
+ * are listed and are not requests.
  *
  * The parsers only validate and copy fields. They never look at session
  * state, transaction state or the node's identity storage; that is L3's job.
@@ -148,6 +151,7 @@ int ecsp_catalog_request(uint8_t cmd, uint8_t *flags, uint16_t *req_len,
 int ecsp_catalog_resp_ms(uint8_t cmd, uint32_t *resp_ms);
 int ecsp_catalog_long_run(uint8_t action, uint8_t *event_cmd,
                           uint8_t *query_cmd);
+int ecsp_catalog_upload_gated(uint8_t cmd);
 uint16_t ecsp_catalog_max_resp_data(void);
 
 /* Response codes (spec 3.6), the subset this slice emits. */

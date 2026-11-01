@@ -177,7 +177,7 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
     if (cfg->slave_count > 0u && cfg->slaves == NULL) {
         return ECSP_E_ARG;
     }
-    if (cfg->board_cmds == NULL && cfg->board_cmd_count != 0u) {
+    if (cfg->board_cmds.table == NULL && cfg->board_cmds.table_len != 0u) {
         return ECSP_E_ARG;
     }
     if (cfg->rx_buf == NULL || cfg->rx_cap < ECSP_MAX_FRAME) {
@@ -323,13 +323,14 @@ static int is_identity_write(uint8_t cmd)
 static uint32_t stated_board_ms(const ecsp_host_t *h, uint8_t cmd)
 {
     size_t i;
+    const ecsp_cmd_table_t *board = &h->cfg.board_cmds;
 
-    if (h->cfg.board_cmds == NULL) {
+    if (board->table == NULL) {
         return 0u;
     }
-    for (i = 0u; i < h->cfg.board_cmd_count; i++) {
-        if (h->cfg.board_cmds[i].cmd == cmd) {
-            return h->cfg.board_cmds[i].resp_ms;
+    for (i = 0u; i < board->table_len; i++) {
+        if (board->table[i].cmd == cmd) {
+            return board->table[i].resp_ms;
         }
     }
     return 0u;

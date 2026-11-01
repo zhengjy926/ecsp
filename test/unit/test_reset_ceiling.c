@@ -88,8 +88,7 @@ static void init_host(void)
     cfg.tx_cap = sizeof g_tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
-    cfg.board_cmds = NULL;
-    cfg.board_cmd_count = 0u;
+    cfg.board_cmds = (ecsp_cmd_table_t){ NULL, 0u };
     CHECK_EQ(ECSP_OK, ecsp_host_init(&g_host, &cfg));
 }
 

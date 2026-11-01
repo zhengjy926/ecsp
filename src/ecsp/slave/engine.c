@@ -74,6 +74,11 @@ static int valid_long_ctrl(const ecsp_frame_t *req)
 
 /* ---- handlers (ADR-0002 step 9) ---- */
 
+static void latch_power_up_upload(ecsp_slave_t *s)
+{
+    s->upload_on = (s->cfg.upload_mode == ECSP_UPLOAD_ON) ? 1u : 0u;
+}
+
 static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
                        uint8_t *resp, size_t cap, size_t *resp_len)
 {
@@ -89,7 +94,7 @@ static int h_handshake(ecsp_slave_t *s, const ecsp_frame_t *req,
      * on the configured power-up value (spec 5.2.15). A one-shot that was
      * never queued while the mode was off stays unqueued. */
     ecsp_long_run_on_handshake(s);
-    s->upload_on = (s->cfg.upload_mode == ECSP_UPLOAD_ON) ? 1u : 0u;
+    latch_power_up_upload(s);
     s->low_power_mode = ECSP_LOW_POWER_EXIT;
     s->pending_ready = 1u;
     return ECSP_RS_OK;
@@ -220,13 +225,6 @@ static int h_set_low_power(ecsp_slave_t *s, const ecsp_frame_t *req,
     (void)resp;
     (void)cap;
     *resp_len = 0u;
-    /* spec 5.2.15: 低功耗 holds a ready one-shot, but an exit while
-     * 上传模式 is still off does not flush it. Upload on still does. */
-    if ((s->low_power_mode == ECSP_LOW_POWER_ENTER) &&
-        (mode == ECSP_LOW_POWER_EXIT) &&
-        (s->upload_on == 0u)) {
-        ecsp_long_run_drop_held(s);
-    }
     s->low_power_mode = mode;
     return ECSP_RS_OK;
 }
@@ -351,7 +349,7 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->ready = 0u;
     s->fault_word = cfg->fault_word;
     s->low_power_mode = 0u;
-    s->upload_on = (cfg->upload_mode == ECSP_UPLOAD_ON) ? 1u : 0u;
+    latch_power_up_upload(s);
     s->pending_ready = 0u;
     s->pending_reset = 0u;
     s->reset_requested = 0u;
@@ -498,7 +496,9 @@ static void report_if_due(ecsp_slave_t *s, uint32_t now_ms)
      * and 5.2.16 examples are minimal frames). A full FIFO defers it: nothing
      * went out, so the report cadence must not advance and the next step
      * retries. */
-    if (cmd != 0u && send_frame(s, cmd, NULL, 0u, now_ms)) {
+    if (cmd != 0u &&
+        (s->upload_on != 0u || ecsp_catalog_upload_gated(cmd) == 0) &&
+        send_frame(s, cmd, NULL, 0u, now_ms)) {
         ecsp_session_note_report(s, now_ms);
     }
 }
