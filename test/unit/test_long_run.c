@@ -16,7 +16,8 @@
 
 #include "test_util.h"
 
-#define BOARD_ACT 0x30u
+#define BOARD_ACT   0x30u
+#define BOARD_QUERY 0x31u
 
 /* spec 5.2.8 recommended ceiling, little-endian. */
 static const uint8_t selftest_tmax[2] = { 0xD0u, 0x07u };
@@ -52,6 +53,7 @@ static ecsp_slave_t g_slave;
 static ecsp_slave_identity_t g_identity;
 static uint32_t g_now;
 static int g_board_calls;
+static int g_query_calls;
 static int g_abort_calls;
 static uint8_t g_abort_cmd;
 static size_t g_tx_at_abort;
@@ -69,8 +71,23 @@ static int board_act(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
+static int board_query(ecsp_slave_t *s, const ecsp_frame_t *req,
+                       uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    (void)s;
+    (void)req;
+    (void)cap;
+    g_query_calls++;
+    resp[0] = 0xA5u;
+    *resp_len = 1u;
+    return ECSP_RS_OK;
+}
+
+/* Both entries state 100 ms. The pipeline still uses the class flag:
+ * the query runs during a long-running command, the sequenced action does not. */
 static const ecsp_cmd_entry_t g_board[] = {
-    { BOARD_ACT, ECSP_CMD_TXN_SEQ, 1u, 0u, NULL, board_act }
+    { BOARD_ACT, ECSP_CMD_TXN_SEQ, 1u, 0u, NULL, board_act, 100u },
+    { BOARD_QUERY, ECSP_CMD_QUERY, 0u, 1u, NULL, board_query, 100u }
 };
 
 static int abort_ok(ecsp_slave_t *s, uint8_t cmd)
@@ -106,6 +123,7 @@ static void init_slave(void)
 
     g_now = 0u;
     g_board_calls = 0;
+    g_query_calls = 0;
     g_abort_calls = 0;
     g_abort_cmd = 0u;
     g_tx_at_abort = 0u;
@@ -386,6 +404,15 @@ static void test_busy_rejects_ordinary_commands_without_exec_max(void)
 
     send_cmd(ECSP_CMD_GET_SELFTEST, NULL, 0u);
     expect_resp(ECSP_CMD_GET_SELFTEST, ECSP_RS_OK, still, sizeof still);
+
+    /* The query entry states 100 ms. Admission still follows the query flag. */
+    send_cmd(BOARD_QUERY, NULL, 0u);
+    {
+        static const uint8_t byte[1] = { 0xA5u };
+
+        expect_resp(BOARD_QUERY, ECSP_RS_OK, byte, 1u);
+    }
+    CHECK_EQ(1, g_query_calls);
 }
 
 static void test_stop_is_accepted_and_result_becomes_aborted(void)

@@ -20,7 +20,7 @@
 #define ECSP_DROPOUT_MS (3u * ECSP_HEARTBEAT_MS)
 
 #if ECSP_RESP_DEFAULT_MS > 0x7FFFFFFFu || ECSP_RESP_RESET_MS > 0x7FFFFFFFu \
-    || ECSP_RESP_UNLISTED_MS > 0x7FFFFFFFu || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
+    || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
     || ECSP_RESP_IDENTITY_MS > 0x7FFFFFFFu \
     || ECSP_SESSION_SETUP_MS > 0x7FFFFFFFu || ECSP_DROPOUT_MS > 0x7FFFFFFFu
 #error "host deadlines must be below 2^31 ms to stay wrap-safe"
@@ -177,6 +177,9 @@ int ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg)
     if (cfg->slave_count > 0u && cfg->slaves == NULL) {
         return ECSP_E_ARG;
     }
+    if (cfg->board_cmds == NULL && cfg->board_cmd_count != 0u) {
+        return ECSP_E_ARG;
+    }
     if (cfg->rx_buf == NULL || cfg->rx_cap < ECSP_MAX_FRAME) {
         return ECSP_E_ARG;
     }
@@ -315,7 +318,24 @@ static int is_identity_write(uint8_t cmd)
     return 0;
 }
 
-static uint32_t response_limit(uint8_t cmd)
+/* First matching board-table entry. 0 means that entry states no ceiling.
+ * flags and handlers are not read. */
+static uint32_t stated_board_ms(const ecsp_host_t *h, uint8_t cmd)
+{
+    size_t i;
+
+    if (h->cfg.board_cmds == NULL) {
+        return 0u;
+    }
+    for (i = 0u; i < h->cfg.board_cmd_count; i++) {
+        if (h->cfg.board_cmds[i].cmd == cmd) {
+            return h->cfg.board_cmds[i].resp_ms;
+        }
+    }
+    return 0u;
+}
+
+static uint32_t response_limit(const ecsp_host_t *h, uint8_t cmd)
 {
     uint32_t ms = 0u;
 
@@ -323,9 +343,13 @@ static uint32_t response_limit(uint8_t cmd)
     if (ecsp_catalog_resp_ms(cmd, &ms) != 0) {
         return ms;
     }
-    /* A board command is not in the catalog. It keeps the ceiling unlisted
-     * commands already waited. */
-    return ECSP_RESP_UNLISTED_MS;
+    /* A board command is not in the catalog. A stated millisecond on the
+     * caller's table wins; otherwise the shared 50 ms default. */
+    ms = stated_board_ms(h, cmd);
+    if (ms != 0u) {
+        return ms;
+    }
+    return ECSP_RESP_DEFAULT_MS;
 }
 
 /* One outstanding bring-up request: on its deadline, resend or give up.
@@ -342,7 +366,7 @@ static void progress_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
     if (waiting_hs || waiting_ver) {
         uint8_t waited = waiting_hs ? (uint8_t)ECSP_CMD_HANDSHAKE
                                     : (uint8_t)ECSP_CMD_GET_VERSION;
-        uint32_t limit = response_limit(waited);
+        uint32_t limit = response_limit(h, waited);
 
         if (!deadline_reached(slot->sent_ms, now_ms, limit)) {
             return;
@@ -419,7 +443,7 @@ static void progress_txn(ecsp_host_t *h, ecsp_host_slot_t *slot, uint32_t now_ms
         return;
     }
     if (!deadline_reached(slot->txn_sent_ms, now_ms,
-                          response_limit(slot->txn_wire_cmd))) {
+                          response_limit(h, slot->txn_wire_cmd))) {
         return;
     }
     if (slot->txn_attempt >= ECSP_HOST_ATTEMPTS) {

@@ -903,10 +903,10 @@ static void test_init_rejects_incomplete_configuration(void)
     ecsp_slave_cfg_t cfg;
     static const uint8_t sw_version[7] = { '1', '.', '0', '.', '0', '.', '0' };
     static const ecsp_cmd_entry_t big_response[] = {
-        { 0x30u, ECSP_CMD_NONE, 0u, 40u, NULL, NULL }
+        { 0x30u, ECSP_CMD_NONE, 0u, 40u, NULL, NULL, 0u }
     };
     static const ecsp_cmd_entry_t oversized_response[] = {
-        { 0x30u, ECSP_CMD_NONE, 0u, ECSP_MAX_FRAME, NULL, NULL }
+        { 0x30u, ECSP_CMD_NONE, 0u, ECSP_MAX_FRAME, NULL, NULL, 0u }
     };
 
     cfg.product_addr = 0x03u;

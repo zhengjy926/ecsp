@@ -70,13 +70,13 @@ static int on_bump_counter(ecsp_slave_t *s, const ecsp_frame_t *req,
 
 static const ecsp_cmd_entry_t g_table[] = {
     { F429_CMD_GET_CHIP_ID, ECSP_CMD_QUERY, 0u, F429_CHIP_ID_LEN,
-      NULL, on_get_chip_id },
+      NULL, on_get_chip_id, 0u },
     { F429_CMD_GET_TEST_BYTE, ECSP_CMD_QUERY, 0u, 1u,
-      NULL, on_get_test_byte },
+      NULL, on_get_test_byte, 0u },
     { F429_CMD_SET_TEST_BYTE, 0u, 1u, 0u,
-      NULL, on_set_test_byte },
+      NULL, on_set_test_byte, 100u },
     { F429_CMD_BUMP_COUNTER, ECSP_CMD_TXN_SEQ, 1u, 4u,
-      NULL, on_bump_counter }
+      NULL, on_bump_counter, 100u }
 };
 
 static const ecsp_cmd_table_t g_cmds = {
