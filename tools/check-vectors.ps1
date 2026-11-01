@@ -426,7 +426,7 @@ foreach ($msg in $timingFailures) {
     }
 }
 
-$anchored = '错误处理同 5.2.3 节。时序适用表 7-1 设置类的 ≤100 ms，不沿用 5.2.3 的 3 s 非易失写入上限。'
+$anchored = '错误处理同 5.2.3 节。时序适用表 7-1 设置类的 ≤50 ms，不沿用 5.2.3 的 3 s 非易失写入上限。'
 $probe = $specText.Replace($anchored, '时序与错误处理同 5.2.3 节。')
 if ($probe -eq $specText) {
     Write-Host 'FAIL timing check self-test: the low-power timing sentence is gone, so the detector is no longer anchored'

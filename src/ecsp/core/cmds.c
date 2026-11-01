@@ -20,41 +20,42 @@ typedef struct {
     uint8_t query_cmd;
 } catalog_entry_t;
 
-/* Today's silence ceilings, one number per command. Several commands share
- * a macro, so loosening that macro still loosens that whole row. The host
- * reads resp_ms and does not look at flags. */
+/* Silence ceilings. The three classes and the handshake share one macro.
+ * 0x07 names its own macro even while both numbers are 50, so loosening
+ * that macro does not loosen the row. The host reads resp_ms and does
+ * not look at flags. */
 static const catalog_entry_t g_catalog[] = {
     { ECSP_CMD_HANDSHAKE, CATALOG_REQUEST, ECSP_CMD_PREEMPTIVE,
-      0u, 0u, ECSP_RESP_HANDSHAKE_MS, 0u, 0u },
+      0u, 0u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_GET_VERSION, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, ECSP_VERSION_LEN, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, ECSP_VERSION_LEN, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_SET_HW_VERSION, CATALOG_REQUEST, ECSP_CMD_NONE,
       ECSP_VERSION_LEN, 0u, ECSP_RESP_IDENTITY_MS, 0u, 0u },
     { ECSP_CMD_GET_HW_VERSION, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, ECSP_VERSION_LEN, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, ECSP_VERSION_LEN, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_SET_SERIAL, CATALOG_REQUEST, ECSP_CMD_NONE,
       ECSP_SERIAL_LEN, 0u, ECSP_RESP_IDENTITY_MS, 0u, 0u },
     { ECSP_CMD_GET_SERIAL, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, ECSP_SERIAL_LEN, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, ECSP_SERIAL_LEN, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_SYSTEM_RESET, CATALOG_REQUEST,
       (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
-      ECSP_TXN_SEQ_LEN, 0u, ECSP_RESP_ACTION_MS, 0u, 0u },
+      ECSP_TXN_SEQ_LEN, 0u, ECSP_RESP_RESET_MS, 0u, 0u },
     { ECSP_CMD_CONTROL_SELFTEST, CATALOG_REQUEST,
       (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
-      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, ECSP_RESP_ACTION_MS,
+      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, ECSP_RESP_DEFAULT_MS,
       ECSP_CMD_SELFTEST_REPORT, ECSP_CMD_GET_SELFTEST },
     { ECSP_CMD_GET_SELFTEST, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, 1u, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, 1u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_SELFTEST_REPORT, CATALOG_EVENT, ECSP_CMD_NONE,
       0u, 0u, 0u, 0u, 0u },
     { ECSP_CMD_SET_LOW_POWER, CATALOG_REQUEST, ECSP_CMD_NONE,
-      1u, 0u, ECSP_RESP_ACTION_MS, 0u, 0u },
+      1u, 0u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_START_UPGRADE, CATALOG_REQUEST,
       (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
       (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, ECSP_RESP_UPGRADE_MS,
       ECSP_CMD_UPGRADE_REPORT, ECSP_CMD_GET_UPGRADE },
     { ECSP_CMD_GET_UPGRADE, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, 1u, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, 1u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_UPGRADE_REPORT, CATALOG_EVENT, ECSP_CMD_NONE,
       0u, 0u, 0u, 0u, 0u },
     { ECSP_CMD_HEARTBEAT, CATALOG_EVENT, ECSP_CMD_NONE,
@@ -62,7 +63,7 @@ static const catalog_entry_t g_catalog[] = {
     { ECSP_CMD_FAULT_REPORT, CATALOG_EVENT, ECSP_CMD_NONE,
       0u, 0u, 0u, 0u, 0u },
     { ECSP_CMD_GET_FAULT, CATALOG_REQUEST, ECSP_CMD_QUERY,
-      0u, 1u, ECSP_RESP_QUERY_MS, 0u, 0u },
+      0u, 1u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
 };
 
 #define ECSP_CATALOG_COUNT (sizeof g_catalog / sizeof g_catalog[0])

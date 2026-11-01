@@ -81,6 +81,18 @@ add_executable(test_host test/unit/test_host.c)
 target_link_libraries(test_host PRIVATE ecsp_core)
 ecsp_enable_warnings(test_host)
 
+# Same sources as ecsp_core, with only 0x07's ceiling loosened. The shared
+# 50 ms default is untouched, which is what test_reset_ceiling observes.
+get_target_property(ECSP_CORE_SOURCES ecsp_core SOURCES)
+add_library(ecsp_core_loose_reset STATIC ${ECSP_CORE_SOURCES})
+target_include_directories(ecsp_core_loose_reset PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(ecsp_core_loose_reset PRIVATE ECSP_RESP_RESET_MS=200u)
+ecsp_enable_warnings(ecsp_core_loose_reset)
+
+add_executable(test_reset_ceiling test/unit/test_reset_ceiling.c)
+target_link_libraries(test_reset_ceiling PRIVATE ecsp_core_loose_reset)
+ecsp_enable_warnings(test_reset_ceiling)
+
 add_test(NAME frame COMMAND test_frame)
 add_test(NAME cmds COMMAND test_cmds)
 add_test(NAME slave COMMAND test_slave)
@@ -89,6 +101,7 @@ add_test(NAME txn_cache COMMAND test_txn_cache)
 add_test(NAME session COMMAND test_session)
 add_test(NAME long_run COMMAND test_long_run)
 add_test(NAME host COMMAND test_host)
+add_test(NAME reset_ceiling COMMAND test_reset_ceiling)
 
 add_executable(test_two_instance test/integ/two_instance.c)
 target_link_libraries(test_two_instance PRIVATE ecsp_core)

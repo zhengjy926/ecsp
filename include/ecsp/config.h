@@ -41,26 +41,26 @@
 #define ECSP_HEARTBEAT_MS 1000u
 #endif
 
-/* Silence ceilings stored in the common-command catalog (spec 7.1,
- * table 7-4: a product may only loosen these). The host reads the
- * millisecond from the catalog entry. It does not derive one from the
- * command class. Table 7-1 has no row for the special-session class, so
- * a handshake answer waits the action-class ceiling. Get-version is a
- * query and waits ECSP_RESP_QUERY_MS. */
-#ifndef ECSP_RESP_HANDSHAKE_MS
-#define ECSP_RESP_HANDSHAKE_MS 100u
+/* One silence ceiling for 获取类, 设置类, 动作类, and the handshake
+ * (spec 7.1, table 7-4). A product may only loosen it. The host reads
+ * the millisecond from the catalog entry and does not derive one from
+ * the command class. 0x07 does not use this macro. Neither do 0x03,
+ * 0x05, or 0x0C. */
+#ifndef ECSP_RESP_DEFAULT_MS
+#define ECSP_RESP_DEFAULT_MS 50u
 #endif
 
-#ifndef ECSP_RESP_QUERY_MS
-#define ECSP_RESP_QUERY_MS 50u
+/* 0x07's own ceiling. The number matches the shared default, and
+ * loosening this macro does not change that default or any other
+ * command (spec 7.1, table 7-4). */
+#ifndef ECSP_RESP_RESET_MS
+#define ECSP_RESP_RESET_MS 50u
 #endif
 
-/* Set-class and action-class first answers (spec 7.1). Online upgrade's
- * first answer is the longer ceiling in the same table. Setting the
- * hardware version (0x03) or the serial number (0x05) is a non-volatile
- * write and uses ECSP_RESP_IDENTITY_MS instead. */
-#ifndef ECSP_RESP_ACTION_MS
-#define ECSP_RESP_ACTION_MS 100u
+/* A command the catalog does not list still waits the ceiling those
+ * commands already waited. A board command table replaces this. */
+#ifndef ECSP_RESP_UNLISTED_MS
+#define ECSP_RESP_UNLISTED_MS 100u
 #endif
 
 /* First answer for a non-volatile identity write (spec 7.1). A sector erase

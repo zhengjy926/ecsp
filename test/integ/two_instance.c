@@ -34,7 +34,8 @@
 #define BOARD      0x02u
 #define BOARD_ACT  0x30u
 #define QUERY_MS   50u
-#define ACTION_MS  100u
+#define DEFAULT_MS  50u /* spec 7.1: 0x0B shares the three-class default */
+#define UNLISTED_MS 100u /* 0x30 is not in the catalog; it still waits 100 ms */
 #define DROPOUT_MS 3000u
 #define REPORT_MS  1000u
 #define LOG_MAX    8
@@ -706,7 +707,7 @@ static void test_half_loss_runs_the_action_once(void)
     seq[0] = 0x11u;
     t = g_now;
     CHECK_EQ(ECSP_OK, submit(BOARD_ACT, seq, 1u));
-    for (dt = 0u; dt <= 400u; dt += ACTION_MS) {
+    for (dt = 0u; dt <= 400u; dt += UNLISTED_MS) {
         exchange(t + dt);
         r = nth_txn(BOARD_ACT, 0);
         if (r != NULL) {
@@ -814,7 +815,7 @@ static void test_restarted_slave_does_not_return_the_previous_answer(void)
     CHECK(nth_txn(BOARD_ACT, 0) == NULL);
 
     init_slave();
-    exchange(t + ACTION_MS);
+    exchange(t + UNLISTED_MS);
     r = nth_txn(BOARD_ACT, 0);
     CHECK(r != NULL);
     if (r != NULL) {
@@ -1229,7 +1230,7 @@ static void test_low_power_holds_result_event_until_exit(void)
 }
 
 /* spec 5.2.11: without a confirmed enter 0x00, dropout still fires; a muted
- * enter times out after three 100 ms attempts and never pauses dropout. */
+ * enter times out after three 50 ms attempts and never pauses dropout. */
 static void test_low_power_enter_silence_does_not_pause_dropout(void)
 {
     static const uint8_t enter[1] = { ECSP_LOW_POWER_ENTER };
@@ -1271,7 +1272,7 @@ static void test_low_power_enter_silence_does_not_pause_dropout(void)
     g_mute_slave = 1;
     CHECK_EQ(ECSP_OK, submit(ECSP_CMD_SET_LOW_POWER, enter, sizeof enter));
     t = g_now;
-    for (g_now = t; g_now <= t + 3u * ACTION_MS + 50u; g_now += 10u) {
+    for (g_now = t; g_now <= t + 3u * DEFAULT_MS + 50u; g_now += 10u) {
         exchange(g_now);
     }
     r = nth_txn(ECSP_CMD_SET_LOW_POWER, 0);

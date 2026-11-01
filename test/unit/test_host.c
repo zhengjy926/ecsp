@@ -19,20 +19,21 @@
  *  - a second host context keeps its own FIFO and can be stepped from the
  *    first host's callback.
  *
- * Expected frames are the golden vectors (spec 5.2.1, 5.2.2, 5.2.18), not
- * bytes recomputed by the encoder under test. Timeouts use the spec's
- * numbers: 100 ms for a handshake answer (table 7-1 has no special-session
- * row, so the host waits the action-class ceiling) and 50 ms for the
- * get-version query (table 7-1).
+ * Expected frames are the golden vectors (spec 5.2.1, 5.2.2, 5.2.7, 5.2.11,
+ * 5.2.18), not bytes recomputed by the encoder under test. Timeouts use the
+ * spec's numbers (table 7-1): 50 ms is the one default for a get, a set, an
+ * action, and the handshake. 0x07 keeps that same number on its own ceiling.
+ * 0x03 and 0x05 stay at 3 s. 0x0C's first answer stays at 500 ms.
  */
 
 #include "ecsp/ecsp.h"
 
 #include "test_util.h"
 
-#define HANDSHAKE_MS 100u
+#define HANDSHAKE_MS 50u
 #define QUERY_MS     50u
-#define ACTION_MS    100u
+#define DEFAULT_MS   50u /* spec 7.1: the three classes and the handshake */
+#define RESET_MS     50u /* spec 7.1: 0x07's own ceiling, same number */
 #define IDENTITY_MS  3000u /* spec 7.1: 0x03 / 0x05 first answer */
 #define UPGRADE_MS   500u  /* spec 7.1: 0x0C first answer */
 #define SELFTEST_EXEC_MS 2000u
@@ -218,10 +219,13 @@ static const uint8_t get_upgrade_ok[] = {
     0xFA, 0x0B, 0x00, 0x03, 0x0D, 0x02, 0x00, 0x00, 0x46, 0xAC, 0x0D
 };
 
-/* spec 5.2.11 set low-power mode, enter (0x01). */
+/* spec 5.2.11 set low-power mode, enter (0x01), and the golden 0x00 answer. */
 static const uint8_t low_power_mode[1] = { 0x01u };
 static const uint8_t low_power_req[] = {
     0xFA, 0x0A, 0x00, 0x03, 0x0B, 0x02, 0x01, 0xB1, 0x97, 0x0D
+};
+static const uint8_t low_power_ok[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x0B, 0x02, 0x00, 0x70, 0x57, 0x0D
 };
 
 /* spec 5.2.16 heartbeat, used as a valid frame that is not a command answer. */
@@ -287,7 +291,7 @@ static void on_txn_chain(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                                       reset_seq, 1u, NULL, NULL));
 }
 
-/* now 200 is the first retry instant of a reset sent at 100. A step that
+/* 200 is past the 50 ms ceiling of a reset sent at 100. A step that
  * actually ran would put that retry on the FIFO. */
 static void on_txn_reenter(ecsp_host_t *h, uint8_t board_addr, uint8_t cmd,
                            int status, uint8_t response_code,
@@ -510,7 +514,7 @@ static void test_version_mismatch_refuses_business_command(void)
     CHECK_EQ(1, g_events);
 }
 
-/* The 100 ms handshake window is measured with a signed difference, so a
+/* The 50 ms handshake window is measured with a signed difference, so a
  * now_ms wrap must neither retry early nor skip the retry (impl spec
  * section 3). */
 static void test_handshake_retry_survives_clock_wrap(void)
@@ -651,15 +655,15 @@ static void test_inflight_txn_keeps_session_and_retries_same_sequence(void)
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
     CHECK_EQ(0, g_txn_calls);
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + RESET_MS);
     expect_bytes(reset_req, sizeof reset_req);
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
 
-    step_at(20u + 2u * ACTION_MS);
+    step_at(20u + 2u * RESET_MS);
     expect_bytes(reset_req, sizeof reset_req);
 
-    step_at(20u + 3u * ACTION_MS);
+    step_at(20u + 3u * RESET_MS);
     expect_nothing();
     CHECK_EQ(ECSP_SESS_OFFLINE, ecsp_host_session(&g_host, 0x02u));
     CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
@@ -668,7 +672,7 @@ static void test_inflight_txn_keeps_session_and_retries_same_sequence(void)
     CHECK_EQ(ECSP_CMD_SYSTEM_RESET, g_txn_cmd);
     CHECK_EQ(1, g_txn_user_got);
 
-    step_at(20u + 4u * ACTION_MS);
+    step_at(20u + 4u * RESET_MS);
     expect_nothing();
     CHECK_EQ(1, g_txn_calls);
     CHECK_EQ(ECSP_E_STATE,
@@ -1117,9 +1121,9 @@ static void test_two_hosts_keep_separate_fifos(void)
     CHECK_EQ(ECSP_SESS_HANDSHAKING, ecsp_host_session(&b, 0x02u));
 }
 
-/* spec 7.1: an identity answer inside the old 100 ms ceiling ends the
+/* spec 7.1: an identity answer inside the shared 50 ms default ends the
  * transaction at once. The host does not sit out the 3 s window. */
-static void test_identity_answer_within_100ms_ends_immediately(void)
+static void test_identity_answer_within_50ms_ends_immediately(void)
 {
     g_txn_calls = 0;
     reach_normal();
@@ -1133,7 +1137,7 @@ static void test_identity_answer_within_100ms_ends_immediately(void)
     CHECK_EQ(0, g_txn_calls);
 
     ecsp_host_rx(&g_host, hw_set_ok, sizeof hw_set_ok);
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     CHECK_EQ(1, g_txn_calls);
     CHECK_EQ(ECSP_OK, g_txn_status);
     CHECK_EQ(ECSP_CMD_SET_HW_VERSION, g_txn_cmd);
@@ -1150,7 +1154,7 @@ static void test_identity_answer_within_100ms_ends_immediately(void)
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
 }
 
-/* spec 7.1: 100 ms of silence is not a retry. An answer at 2 s still
+/* spec 7.1: 50 ms of silence is not a retry. An answer at 2 s still
  * succeeds, and the transaction ends on that step. */
 static void test_identity_answer_at_2s_still_succeeds(void)
 {
@@ -1163,7 +1167,7 @@ static void test_identity_answer_at_2s_still_succeeds(void)
     step_at(20u);
     expect_bytes(hw_set_req, sizeof hw_set_req);
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
@@ -1256,9 +1260,9 @@ static void test_identity_reject_is_not_retried(void)
     CHECK_EQ(1, g_txn_calls);
 }
 
-/* spec 7.1: a set command that is not a non-volatile write still uses
- * the 100 ms ceiling. */
-static void test_low_power_still_retries_at_100ms(void)
+/* spec 7.1: 0x0B uses the shared 50 ms default. One millisecond early is
+ * still silence; the golden request is what gets sent again. */
+static void test_low_power_retries_at_50ms(void)
 {
     g_txn_calls = 0;
     reach_normal();
@@ -1269,20 +1273,48 @@ static void test_low_power_still_retries_at_100ms(void)
     step_at(20u);
     expect_bytes(low_power_req, sizeof low_power_req);
 
-    step_at(20u + ACTION_MS - 1u);
+    step_at(20u + DEFAULT_MS - 1u);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_bytes(low_power_req, sizeof low_power_req);
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
     CHECK_EQ(0, g_txn_calls);
 }
 
-/* An action answer inside the 100 ms ceiling ends the transaction.
+/* spec 7.1: the 0x00 answer ends 0x0B before the 50 ms ceiling, and the
+ * ceiling step does not send the request again. */
+static void test_low_power_answer_before_50ms_ends_immediately(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SET_LOW_POWER,
+                                      low_power_mode, sizeof low_power_mode,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(low_power_req, sizeof low_power_req);
+
+    ecsp_host_rx(&g_host, low_power_ok, sizeof low_power_ok);
+    step_at(20u + 10u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_SET_LOW_POWER, g_txn_cmd);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + DEFAULT_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+}
+
+/* An action answer inside the 50 ms ceiling ends the transaction.
  * The host does not also retry at the ceiling. */
-static void test_reset_answer_before_100ms_ends_immediately(void)
+static void test_reset_answer_before_50ms_ends_immediately(void)
 {
     g_txn_calls = 0;
     reach_normal();
@@ -1301,15 +1333,15 @@ static void test_reset_answer_before_100ms_ends_immediately(void)
     CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
     expect_nothing();
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + RESET_MS);
     expect_nothing();
     CHECK_EQ(1, g_txn_calls);
     CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
 }
 
-/* spec 7.1: accepting a self-test waits 100 ms, not the upgrade window
- * and not the 50 ms query ceiling. */
-static void test_selftest_accept_retries_at_100ms(void)
+/* spec 7.1: accepting a self-test waits the shared 50 ms default, not the
+ * 500 ms upgrade window. */
+static void test_selftest_accept_retries_at_50ms(void)
 {
     g_txn_calls = 0;
     reach_normal();
@@ -1320,14 +1352,11 @@ static void test_selftest_accept_retries_at_100ms(void)
     step_at(20u);
     expect_bytes(selftest_req, sizeof selftest_req);
 
-    step_at(20u + QUERY_MS);
+    step_at(20u + DEFAULT_MS - 1u);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
 
-    step_at(20u + ACTION_MS - 1u);
-    expect_nothing();
-
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_bytes(selftest_req, sizeof selftest_req);
     CHECK_EQ(0, g_txn_calls);
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
@@ -1353,17 +1382,17 @@ static void test_selftest_result_event_is_0x0A(void)
     CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
     expect_nothing();
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
 
     ecsp_host_rx(&g_host, upgrade_event, sizeof upgrade_event);
-    step_at(20u + ACTION_MS + 1u);
+    step_at(20u + DEFAULT_MS + 1u);
     CHECK_EQ(0, g_txn_calls);
     CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
 
     ecsp_host_rx(&g_host, selftest_event, sizeof selftest_event);
-    step_at(20u + ACTION_MS + 2u);
+    step_at(20u + DEFAULT_MS + 2u);
     CHECK_EQ(1, g_txn_calls);
     CHECK_EQ(ECSP_OK, g_txn_status);
     CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, g_txn_cmd);
@@ -1418,8 +1447,8 @@ static void test_selftest_get_result_is_0x09(void)
     CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
 }
 
-/* spec 7.1: the upgrade accept stays at 500 ms. 100 ms of silence is
- * not a retry. */
+/* spec 7.1: the upgrade accept stays at 500 ms. The shared 50 ms default
+ * is not a retry. */
 static void test_upgrade_accept_retries_at_500ms(void)
 {
     g_txn_calls = 0;
@@ -1431,7 +1460,7 @@ static void test_upgrade_accept_retries_at_500ms(void)
     step_at(20u);
     expect_bytes(upgrade_req, sizeof upgrade_req);
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
 
@@ -1510,8 +1539,8 @@ static void test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D(void)
     CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
 }
 
-/* spec 7.1: setting the serial number waits the same 3 s, not 100 ms. */
-static void test_serial_write_waits_3s_not_100ms(void)
+/* spec 7.1: setting the serial number waits the same 3 s, not 50 ms. */
+static void test_serial_write_waits_3s_not_50ms(void)
 {
     reach_normal();
 
@@ -1521,7 +1550,7 @@ static void test_serial_write_waits_3s_not_100ms(void)
     step_at(20u);
     expect_bytes(sn_set_req, sizeof sn_set_req);
 
-    step_at(20u + ACTION_MS);
+    step_at(20u + DEFAULT_MS);
     expect_nothing();
     CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
 
@@ -1554,17 +1583,18 @@ int main(void)
     test_reentering_step_does_not_spend_a_retry();
     test_callback_steps_a_different_host();
     test_two_hosts_keep_separate_fifos();
-    test_identity_answer_within_100ms_ends_immediately();
+    test_identity_answer_within_50ms_ends_immediately();
     test_identity_answer_at_2s_still_succeeds();
     test_identity_silence_times_out_after_three_waits();
     test_identity_reject_is_not_retried();
-    test_low_power_still_retries_at_100ms();
-    test_reset_answer_before_100ms_ends_immediately();
-    test_selftest_accept_retries_at_100ms();
+    test_low_power_retries_at_50ms();
+    test_low_power_answer_before_50ms_ends_immediately();
+    test_reset_answer_before_50ms_ends_immediately();
+    test_selftest_accept_retries_at_50ms();
     test_selftest_result_event_is_0x0A();
     test_selftest_get_result_is_0x09();
     test_upgrade_accept_retries_at_500ms();
     test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D();
-    test_serial_write_waits_3s_not_100ms();
+    test_serial_write_waits_3s_not_50ms();
     return ecsp_test_report();
 }

@@ -19,8 +19,8 @@
  * macro scales the threshold with it. */
 #define ECSP_DROPOUT_MS (3u * ECSP_HEARTBEAT_MS)
 
-#if ECSP_RESP_HANDSHAKE_MS > 0x7FFFFFFFu || ECSP_RESP_QUERY_MS > 0x7FFFFFFFu \
-    || ECSP_RESP_ACTION_MS > 0x7FFFFFFFu || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
+#if ECSP_RESP_DEFAULT_MS > 0x7FFFFFFFu || ECSP_RESP_RESET_MS > 0x7FFFFFFFu \
+    || ECSP_RESP_UNLISTED_MS > 0x7FFFFFFFu || ECSP_RESP_UPGRADE_MS > 0x7FFFFFFFu \
     || ECSP_RESP_IDENTITY_MS > 0x7FFFFFFFu \
     || ECSP_SESSION_SETUP_MS > 0x7FFFFFFFu || ECSP_DROPOUT_MS > 0x7FFFFFFFu
 #error "host deadlines must be below 2^31 ms to stay wrap-safe"
@@ -325,7 +325,7 @@ static uint32_t response_limit(uint8_t cmd)
     }
     /* A board command is not in the catalog. It keeps the ceiling unlisted
      * commands already waited. */
-    return ECSP_RESP_ACTION_MS;
+    return ECSP_RESP_UNLISTED_MS;
 }
 
 /* One outstanding bring-up request: on its deadline, resend or give up.
