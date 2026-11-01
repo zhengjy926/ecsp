@@ -21,6 +21,10 @@ PLL Q when the PLL block is programmed, and similar. Flag scope creep only
 for behaviour the ticket did not ask for (new commands, new timing ceilings,
 a second test seam, Sleep when the ticket deferred it).
 
+## Product wiring guide
+
+`README.md` is the caller-facing wiring guide. A change to a public function name, a signature, a configuration field, a compile-time macro the caller sets, or the way the guide says to wire the library updates `README.md` in the same change. Behavior the guide already states (timeouts, which frames leave the slave, what a callback receives) stays aligned with the implementation.
+
 ## Host session pauses
 
 Flags that pause dropout or otherwise gate the session axis clear when the
