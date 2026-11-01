@@ -75,6 +75,12 @@ ECSP_VECTOR(low_power_resp,     "FA 0A 00 03 0B 02 00 70 57 0D", "spec 5.2.11")
 /* 5.2.14 upgrade result report (response code 0x00 = success). */
 ECSP_VECTOR(upgrade_report, "FA 0A 00 03 0E 02 00 60 56 0D", "spec 5.2.14")
 
+/* 5.2.15 upload mode. Off request and the 0x00 answer are the same bytes.
+ * On request carries control 0x01. */
+ECSP_VECTOR(upload_off_req, "FA 0A 00 03 0F 02 00 31 96 0D", "spec 5.2.15")
+ECSP_VECTOR(upload_on_req,  "FA 0A 00 03 0F 02 01 F0 56 0D", "spec 5.2.15")
+ECSP_VECTOR(upload_resp,    "FA 0A 00 03 0F 02 00 31 96 0D", "spec 5.2.15")
+
 /* 5.2.16 heartbeat. */
 ECSP_VECTOR(heartbeat, "FA 09 00 03 10 02 84 00 0D", "spec 5.2.16")
 

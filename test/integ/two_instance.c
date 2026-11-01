@@ -210,6 +210,7 @@ static void init_slave(void)
     memcpy(cfg.version.b, version_1_0_0_0, sizeof version_1_0_0_0);
     cfg.identity = &g_identity;
     cfg.fault_word = 0x01u;
+    cfg.upload_mode = ECSP_UPLOAD_ON;
     cfg.cmds.table = g_board;
     cfg.cmds.table_len = sizeof g_board / sizeof g_board[0];
     cfg.rx_buf = g_slave_rx;

@@ -77,6 +77,10 @@ add_executable(test_long_run test/unit/test_long_run.c)
 target_link_libraries(test_long_run PRIVATE ecsp_core)
 ecsp_enable_warnings(test_long_run)
 
+add_executable(test_upload test/unit/test_upload.c)
+target_link_libraries(test_upload PRIVATE ecsp_core)
+ecsp_enable_warnings(test_upload)
+
 add_executable(test_host test/unit/test_host.c)
 target_link_libraries(test_host PRIVATE ecsp_core)
 ecsp_enable_warnings(test_host)
@@ -100,6 +104,7 @@ add_test(NAME pipeline COMMAND test_pipeline)
 add_test(NAME txn_cache COMMAND test_txn_cache)
 add_test(NAME session COMMAND test_session)
 add_test(NAME long_run COMMAND test_long_run)
+add_test(NAME upload COMMAND test_upload)
 add_test(NAME host COMMAND test_host)
 add_test(NAME reset_ceiling COMMAND test_reset_ceiling)
 

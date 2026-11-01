@@ -172,6 +172,7 @@ static void init_slave(void)
     memcpy(cfg.version.b, sw_version, sizeof sw_version);
     cfg.identity       = &g_identity;
     cfg.fault_word     = 0x00u;
+    cfg.upload_mode    = ECSP_UPLOAD_ON;
     cfg.cmds.table     = g_board_table;
     cfg.cmds.table_len = sizeof g_board_table / sizeof g_board_table[0];
     cfg.rx_buf = g_rx;
@@ -283,18 +284,6 @@ static void test_unknown_command_after_handshake(void)
 
     send(0x7Fu, NULL, 0u);
     expect_answer(0x7Fu, ECSP_RS_UNSUPPORTED, NULL, 0u);
-}
-
-/* 0x0F is not a request yet. A host frame that uses it is still undefined. */
-static void test_upload_control_is_still_undefined(void)
-{
-    static const uint8_t off[1] = { 0x00u };
-
-    init_slave();
-    handshake();
-
-    send(ECSP_CMD_CONTROL_UPLOAD, off, sizeof off);
-    expect_answer(ECSP_CMD_CONTROL_UPLOAD, ECSP_RS_UNSUPPORTED, NULL, 0u);
 }
 
 static void test_command_gate_precedes_length_gate(void)
@@ -534,7 +523,6 @@ int main(void)
     test_session_gate_precedes_length_gate();
     test_command_gate_precedes_session_gate();
     test_unknown_command_after_handshake();
-    test_upload_control_is_still_undefined();
     test_result_event_code_is_not_a_request();
     test_command_gate_precedes_length_gate();
     test_length_gate_precedes_parameter_gate();

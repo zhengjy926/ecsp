@@ -82,6 +82,7 @@ static void slave_init(void)
     memcpy(cfg.version.b, k_sw_version, ECSP_VERSION_LEN);
     cfg.identity = &g_identity;
     cfg.fault_word = 0u;
+    cfg.upload_mode = ECSP_UPLOAD_ON;
     cfg.cmds = *cmds;
     cfg.rx_buf = g_rx;
     cfg.rx_cap = sizeof g_rx;

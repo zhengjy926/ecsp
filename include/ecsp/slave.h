@@ -152,6 +152,7 @@ typedef struct {
     ecsp_version_t version;      /* software full version "X.Y.Z.N" (5.2.2) */
     ecsp_slave_identity_t *identity; /* hardware version + serial storage */
     uint8_t        fault_word;   /* current fault word reported by 0x12 (5.2.18) */
+    uint8_t        upload_mode;  /* power-up 上传模式: ECSP_UPLOAD_OFF or ON */
     ecsp_cmd_table_t cmds;       /* board command table (0x30-0xEF) */
     uint8_t       *rx_buf;       /* receive accumulation buffer */
     size_t         rx_cap;       /* rx_buf capacity in bytes */
@@ -173,6 +174,7 @@ struct ecsp_slave {
     uint8_t ready;       /* 0 = waiting for handshake, 1 = ready (spec 4.1.2) */
     uint8_t fault_word;  /* copy of cfg.fault_word; runtime fault bits land here */
     uint8_t low_power_mode; /* last accepted 0x0B mode (5.2.11) */
+    uint8_t upload_on;      /* 1 while 上传模式 is on (5.2.15) */
     uint8_t pending_ready;  /* apply "ready" after the handshake answer is queued */
     uint8_t pending_reset;  /* raise the reset request after the 0x07 answer */
     uint8_t reset_requested; /* 0x07 answered; product must reset after the drain */
@@ -202,9 +204,11 @@ struct ecsp_slave {
 /* Initialise *s from *cfg. Returns ECSP_OK, or ECSP_E_ARG if a buffer/identity
  * pointer is NULL, rx_buf cannot hold the smallest legal frame, tx_buf cannot
  * hold the largest answer declared by the common commands or the board
- * command table, or the command table pointer/length disagree. A fresh context
- * has an empty transaction cache and waits for a handshake: initialising is how
- * a soft reset is modelled (spec 4.2, ADR-0004). */
+ * command table, the command table pointer/length disagree, or upload_mode
+ * is neither ECSP_UPLOAD_OFF nor ECSP_UPLOAD_ON. A fresh context has an
+ * empty transaction cache and waits for a handshake: initialising is how a
+ * soft reset is modelled (spec 4.2, ADR-0004). The power-up 上传模式 is the
+ * configured value again. */
 int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg);
 
 /* Append received bytes (ADR-0005: the only call allowed from an interrupt or

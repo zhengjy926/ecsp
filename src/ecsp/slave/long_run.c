@@ -54,7 +54,7 @@ static void raise_fault_bit0(ecsp_slave_t *s)
     uint8_t raised = (uint8_t)(bits & bit_not(s->fault_word));
 
     s->fault_word = (uint8_t)(s->fault_word | bits);
-    if (raised != 0u) {
+    if (raised != 0u && s->upload_on != 0u) {
         s->fault_report_word = s->fault_word;
         s->fault_report_pending = 1u;
     }
@@ -85,9 +85,13 @@ static void finish_running(ecsp_slave_t *s, uint8_t result)
 
     apply_selftest_fault(s, cmd, result);
     store_result(s, cmd, 1u, result);
-    s->lr_event_cmd = event_cmd_of(cmd);
-    s->lr_event_result = result;
-    s->lr_event_pending = 1u;
+    /* Off does not queue the one-shot. A frame already pending (the FIFO
+     * could not take it) keeps its command and result for a later step. */
+    if (s->upload_on != 0u) {
+        s->lr_event_cmd = event_cmd_of(cmd);
+        s->lr_event_result = result;
+        s->lr_event_pending = 1u;
+    }
     s->lr_cmd = 0u;
 }
 

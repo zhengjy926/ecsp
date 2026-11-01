@@ -76,6 +76,7 @@ static void bind_slave(const uint8_t version[7], uint8_t fault_word)
     cfg.version      = make_version(version);
     cfg.identity     = &g_identity;
     cfg.fault_word   = fault_word;
+    cfg.upload_mode  = ECSP_UPLOAD_ON;
     cfg.cmds.table   = NULL;
     cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;
@@ -182,6 +183,7 @@ static void test_handshake_echoes_node_addresses(void)
     cfg.version      = make_version(version_1_0_0_0);
     cfg.identity     = &g_identity;
     cfg.fault_word   = 0x00u;
+    cfg.upload_mode  = ECSP_UPLOAD_ON;
     cfg.cmds.table   = NULL;
     cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;
@@ -914,6 +916,7 @@ static void test_init_rejects_incomplete_configuration(void)
     cfg.version      = make_version(sw_version);
     cfg.identity     = &g_identity;
     cfg.fault_word   = 0u;
+    cfg.upload_mode  = ECSP_UPLOAD_ON;
     cfg.cmds.table   = NULL;
     cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;

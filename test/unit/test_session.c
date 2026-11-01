@@ -78,6 +78,7 @@ static void init_slave_cap(size_t tx_cap)
     cfg.version      = make_version(sw_version);
     cfg.identity     = &g_identity;
     cfg.fault_word   = 0x00u;
+    cfg.upload_mode  = ECSP_UPLOAD_ON;
     cfg.cmds.table   = NULL;
     cfg.cmds.table_len = 0u;
     cfg.rx_buf = g_rx;

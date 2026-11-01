@@ -3,7 +3,7 @@
 #include <string.h>
 
 /* kind: a request the slave executes, or an event the slave must not treat
- * as a request. 0x0F is absent. */
+ * as a request. */
 enum {
     CATALOG_REQUEST = 1,
     CATALOG_EVENT = 2
@@ -58,6 +58,8 @@ static const catalog_entry_t g_catalog[] = {
       0u, 1u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_UPGRADE_REPORT, CATALOG_EVENT, ECSP_CMD_NONE,
       0u, 0u, 0u, 0u, 0u },
+    { ECSP_CMD_CONTROL_UPLOAD, CATALOG_REQUEST, ECSP_CMD_NONE,
+      1u, 0u, ECSP_RESP_DEFAULT_MS, 0u, 0u },
     { ECSP_CMD_HEARTBEAT, CATALOG_EVENT, ECSP_CMD_NONE,
       0u, 0u, 0u, 0u, 0u },
     { ECSP_CMD_FAULT_REPORT, CATALOG_EVENT, ECSP_CMD_NONE,

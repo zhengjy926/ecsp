@@ -48,6 +48,16 @@ static int valid_low_power_mode(const ecsp_frame_t *req)
     return ecsp_low_power_mode_valid(req->payload[0]) ? ECSP_OK : ECSP_E_VAL;
 }
 
+static int valid_upload_ctrl(const ecsp_frame_t *req)
+{
+    uint8_t ctrl = req->payload[0];
+
+    if (ctrl == ECSP_CTRL_UPLOAD_OFF || ctrl == ECSP_CTRL_UPLOAD_ON) {
+        return ECSP_OK;
+    }
+    return ECSP_E_VAL;
+}
+
 static int valid_long_ctrl(const ecsp_frame_t *req)
 {
     uint8_t ctrl;
@@ -209,6 +219,16 @@ static int h_set_low_power(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
+static int h_control_upload(ecsp_slave_t *s, const ecsp_frame_t *req,
+                            uint8_t *resp, size_t cap, size_t *resp_len)
+{
+    (void)resp;
+    (void)cap;
+    *resp_len = 0u;
+    s->upload_on = (req->payload[0] == ECSP_CTRL_UPLOAD_ON) ? 1u : 0u;
+    return ECSP_RS_OK;
+}
+
 static int h_get_fault(ecsp_slave_t *s, const ecsp_frame_t *req,
                        uint8_t *resp, size_t cap, size_t *resp_len)
 {
@@ -219,8 +239,8 @@ static int h_get_fault(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
-/* Common commands the library executes. Event codes and 0x0F are not here:
- * the catalog says they are not requests, so a host frame using one is 0x04. */
+/* Common commands the library executes. Event codes are not here: the
+ * catalog says they are not requests, so a host frame using one is 0x04. */
 static const common_handler_t g_common_handlers[] = {
     { ECSP_CMD_HANDSHAKE, NULL, h_handshake },
     { ECSP_CMD_GET_VERSION, NULL, h_get_version },
@@ -232,6 +252,7 @@ static const common_handler_t g_common_handlers[] = {
     { ECSP_CMD_CONTROL_SELFTEST, valid_long_ctrl, h_long_action },
     { ECSP_CMD_GET_SELFTEST, NULL, h_long_query },
     { ECSP_CMD_SET_LOW_POWER, valid_low_power_mode, h_set_low_power },
+    { ECSP_CMD_CONTROL_UPLOAD, valid_upload_ctrl, h_control_upload },
     { ECSP_CMD_START_UPGRADE, valid_long_ctrl, h_long_action },
     { ECSP_CMD_GET_UPGRADE, NULL, h_long_query },
     { ECSP_CMD_GET_FAULT, NULL, h_get_fault },
@@ -285,6 +306,10 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     if (cfg->tx_buf == NULL) {
         return ECSP_E_ARG;
     }
+    if (cfg->upload_mode != ECSP_UPLOAD_OFF &&
+        cfg->upload_mode != ECSP_UPLOAD_ON) {
+        return ECSP_E_ARG;
+    }
 
     /* The transmit FIFO must hold the largest answer the engine can queue:
      * the largest common response or any response declared by the board
@@ -314,6 +339,7 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     s->ready = 0u;
     s->fault_word = cfg->fault_word;
     s->low_power_mode = 0u;
+    s->upload_on = (cfg->upload_mode == ECSP_UPLOAD_ON) ? 1u : 0u;
     s->pending_ready = 0u;
     s->pending_reset = 0u;
     s->reset_requested = 0u;
@@ -518,7 +544,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         /* Step 3: undefined command or wrong direction -> 0x04. A common
          * command is a request only when the catalog says so; class, length
          * and the transaction-sequence flag come from that same entry.
-         * Events and 0x0F are not requests. Board commands come from the
+         * Event codes are not requests. Board commands come from the
          * caller's table. */
         common = NULL;
         board = NULL;

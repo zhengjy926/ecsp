@@ -51,6 +51,7 @@ $required = [ordered]@{
     '5.2.10' = @{ Topic = 'self-test report';       Rule = $false }
     '5.2.11' = @{ Topic = 'set low-power mode';     Rule = $false }
     '5.2.14' = @{ Topic = 'upgrade report';         Rule = $false }
+    '5.2.15' = @{ Topic = 'upload mode';            Rule = $false }
     '5.2.16' = @{ Topic = 'heartbeat';              Rule = $false }
     '5.2.17' = @{ Topic = 'fault report';           Rule = $false }
     '5.2.18' = @{ Topic = 'fault query';            Rule = $false }

@@ -10,8 +10,8 @@
  * payload starts with a transaction sequence, the silence ceiling, and the
  * long-running triple. The slave pipeline reads the class, the length and
  * the sequence flag. The host reads the silence ceiling and the triple, and
- * does not read the class. 0x0F is not a request. Event codes are listed and
- * are not requests.
+ * does not read the class. 0x0F is a set command: one control byte and no
+ * transaction sequence. Event codes are listed and are not requests.
  *
  * The parsers only validate and copy fields. They never look at session
  * state, transaction state or the node's identity storage; that is L3's job.
@@ -126,6 +126,17 @@ uint16_t ecsp_catalog_max_resp_data(void);
 /* Low-power mode values (spec 5.2.11). */
 #define ECSP_LOW_POWER_EXIT  0x00u
 #define ECSP_LOW_POWER_ENTER 0x01u
+
+/* 0x0F control byte (spec 5.2.15). */
+#define ECSP_CTRL_UPLOAD_OFF 0x00u
+#define ECSP_CTRL_UPLOAD_ON  0x01u
+
+/* Power-up value in ecsp_slave_cfg_t (spec 5.2.15). Zero is neither
+ * value, so a zeroed configuration cannot mean off. On is the value a
+ * product sets when it does not declare another power-up value. Off is
+ * not the 0x0F control byte 0x00. */
+#define ECSP_UPLOAD_ON  1u
+#define ECSP_UPLOAD_OFF 2u
 
 /* Byte-wise equality over all 7 version bytes (spec 9.2: a fixed 7-byte
  * memcmp, no numeric parsing, no NUL-termination assumption). Returns 1 when

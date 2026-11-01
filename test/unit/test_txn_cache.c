@@ -141,6 +141,7 @@ static void init_slave_cfg(const ecsp_cmd_entry_t *table, size_t table_len,
     memcpy(cfg.version.b, sw_version, sizeof sw_version);
     cfg.identity       = &g_identity;
     cfg.fault_word     = 0x00u;
+    cfg.upload_mode    = ECSP_UPLOAD_ON;
     cfg.cmds.table     = table;
     cfg.cmds.table_len = table_len;
     cfg.rx_buf = g_rx;
