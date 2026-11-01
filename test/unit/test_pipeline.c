@@ -137,14 +137,15 @@ static int concurrent_handler(ecsp_slave_t *s, const ecsp_frame_t *req,
 }
 
 static const ecsp_cmd_entry_t g_board_table[] = {
-    { FAKE_CMD, ECSP_CMD_NONE, FAKE_REQ_LEN, 0u, NULL, fake_handler },
+    { FAKE_CMD, ECSP_CMD_NONE, FAKE_REQ_LEN, 0u, NULL, fake_handler, 0u },
     { FAKE_ANY_CMD, ECSP_CMD_NONE, ECSP_CMD_LEN_ANY, 0u, NULL,
-      any_length_handler },
+      any_length_handler, 0u },
     { FAKE_VALIDATED_CMD, ECSP_CMD_NONE, ECSP_CMD_LEN_ANY, 0u,
-      validated_validator, validated_handler },
-    { CACHED_CMD, ECSP_CMD_TXN_SEQ, 1u, 0u, NULL, cached_handler },
-    { PREEMPT_CMD, ECSP_CMD_PREEMPTIVE, 1u, 0u, NULL, preempt_handler },
-    { CONCURRENT_CMD, ECSP_CMD_CONCURRENT, 1u, 0u, NULL, concurrent_handler }
+      validated_validator, validated_handler, 0u },
+    { CACHED_CMD, ECSP_CMD_TXN_SEQ, 1u, 0u, NULL, cached_handler, 100u },
+    { PREEMPT_CMD, ECSP_CMD_PREEMPTIVE, 1u, 0u, NULL, preempt_handler, 0u },
+    { CONCURRENT_CMD, ECSP_CMD_CONCURRENT, 1u, 0u, NULL, concurrent_handler,
+      0u }
 };
 
 static void init_slave(void)

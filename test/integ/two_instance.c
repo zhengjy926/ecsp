@@ -35,7 +35,7 @@
 #define BOARD_ACT  0x30u
 #define QUERY_MS   50u
 #define DEFAULT_MS  50u /* spec 7.1: 0x0B shares the three-class default */
-#define UNLISTED_MS 100u /* 0x30 is not in the catalog; it still waits 100 ms */
+#define UNLISTED_MS 50u /* 0x30 states no millisecond and the host has no table */
 #define DROPOUT_MS 3000u
 #define REPORT_MS  1000u
 #define LOG_MAX    8
@@ -109,7 +109,7 @@ static int on_act(ecsp_slave_t *s, const ecsp_frame_t *req,
 }
 
 static const ecsp_cmd_entry_t g_board[] = {
-    { BOARD_ACT, ECSP_CMD_TXN_SEQ, 1u, 1u, NULL, on_act }
+    { BOARD_ACT, ECSP_CMD_TXN_SEQ, 1u, 1u, NULL, on_act, 0u }
 };
 
 static int abort_ok(ecsp_slave_t *s, uint8_t cmd)
@@ -236,6 +236,8 @@ static void init_host(void)
     cfg.tx_cap = sizeof g_host_tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
+    cfg.board_cmds = NULL;
+    cfg.board_cmd_count = 0u;
     CHECK_EQ(ECSP_OK, ecsp_host_init(&g_host, &cfg));
 }
 

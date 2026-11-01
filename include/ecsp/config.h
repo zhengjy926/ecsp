@@ -41,11 +41,12 @@
 #define ECSP_HEARTBEAT_MS 1000u
 #endif
 
-/* One silence ceiling for 获取类, 设置类, 动作类, and the handshake
- * (spec 7.1, table 7-4). A product may only loosen it. The host reads
- * the millisecond from the catalog entry and does not derive one from
- * the command class. 0x07 does not use this macro. Neither do 0x03,
- * 0x05, or 0x0C. */
+/* One silence ceiling for 获取类, 设置类, 动作类, the handshake, and a
+ * board command whose table entry states no millisecond (spec 7.1).
+ * A non-zero resp_ms on that entry replaces it for that command only.
+ * A product may only loosen this macro. The host does not derive a
+ * ceiling from the command class. 0x07 does not use this macro.
+ * Neither do 0x03, 0x05, or 0x0C. */
 #ifndef ECSP_RESP_DEFAULT_MS
 #define ECSP_RESP_DEFAULT_MS 50u
 #endif
@@ -55,12 +56,6 @@
  * command (spec 7.1, table 7-4). */
 #ifndef ECSP_RESP_RESET_MS
 #define ECSP_RESP_RESET_MS 50u
-#endif
-
-/* A command the catalog does not list still waits the ceiling those
- * commands already waited. A board command table replaces this. */
-#ifndef ECSP_RESP_UNLISTED_MS
-#define ECSP_RESP_UNLISTED_MS 100u
 #endif
 
 /* First answer for a non-volatile identity write (spec 7.1). A sector erase

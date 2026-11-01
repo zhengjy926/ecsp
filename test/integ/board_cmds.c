@@ -152,6 +152,8 @@ static void init_host(void)
     cfg.tx_cap = sizeof g_host_tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
+    cfg.board_cmds = f429_board_cmds()->table;
+    cfg.board_cmd_count = f429_board_cmds()->table_len;
     CHECK_EQ(ECSP_OK, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -443,6 +445,96 @@ static void test_replay_keeps_the_count(void)
     expect_answer(nth_txn(0x33u, 2), ECSP_RS_OK, second, 4u);
 }
 
+static void drain_host(void)
+{
+    ecsp_host_tx_drain(&g_host, ecsp_host_tx_pending(&g_host));
+}
+
+static void step_host(uint32_t now)
+{
+    CHECK_EQ(ECSP_OK, ecsp_host_step(&g_host, now));
+}
+
+/* Silence, then the same request, then the spec's answer so the next
+ * command can be submitted. The slave is not stepped. */
+static void host_retries_at(uint8_t cmd, const uint8_t *payload, uint16_t plen,
+                            const uint8_t *frame, size_t frame_len,
+                            uint32_t ceiling, const uint8_t *answer,
+                            size_t answer_len, uint32_t *now)
+{
+    uint32_t t = *now;
+
+    g_log_n = 0;
+    CHECK_EQ(ECSP_OK, submit(cmd, payload, plen));
+    step_host(t);
+    CHECK_MEM(frame, frame_len, g_host_tx, ecsp_host_tx_pending(&g_host));
+    drain_host();
+
+    step_host(t + ceiling - 1u);
+    CHECK_EQ(0u, ecsp_host_tx_pending(&g_host));
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, BOARD));
+    CHECK(nth_txn(cmd, 0) == NULL);
+
+    step_host(t + ceiling);
+    CHECK_MEM(frame, frame_len, g_host_tx, ecsp_host_tx_pending(&g_host));
+    drain_host();
+
+    ecsp_host_rx(&g_host, answer, answer_len);
+    step_host(t + ceiling);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, BOARD));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, BOARD));
+    *now = t + ceiling;
+}
+
+/* F429's table states 100 ms on 0x32 and 0x33, and no millisecond on
+ * 0x30 and 0x31. Frames are the board spec examples. */
+static void test_f429_ceilings_are_per_command(void)
+{
+    static const uint8_t written[1] = { 0xA5u };
+    static const uint8_t seq[1] = { 0x01u };
+    static const uint8_t get_chip_req[] = {
+        0xFA, 0x09, 0x00, 0x03, 0x30, 0x02, 0x9D, 0xC0, 0x0D
+    };
+    static const uint8_t get_byte_req[] = {
+        0xFA, 0x09, 0x00, 0x03, 0x31, 0x02, 0x9C, 0x50, 0x0D
+    };
+    static const uint8_t set_byte_req[] = {
+        0xFA, 0x0A, 0x00, 0x03, 0x32, 0x02, 0xA5, 0x60, 0x21, 0x0D
+    };
+    static const uint8_t bump_req[] = {
+        0xFA, 0x0A, 0x00, 0x03, 0x33, 0x02, 0x01, 0x30, 0x5A, 0x0D
+    };
+    static const uint8_t set_byte_ok[] = {
+        0xFA, 0x0A, 0x00, 0x03, 0x32, 0x02, 0x00, 0xA0, 0x5A, 0x0D
+    };
+    static const uint8_t bump_ok[] = {
+        0xFA, 0x0E, 0x00, 0x03, 0x33, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x52, 0xFA, 0x0D
+    };
+    static const uint8_t get_chip_ok[] = {
+        0xFA, 0x16, 0x00, 0x03, 0x30, 0x02, 0x00,
+        0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67,
+        0x75, 0xFB, 0x0D
+    };
+    static const uint8_t get_byte_ok[] = {
+        0xFA, 0x0B, 0x00, 0x03, 0x31, 0x02, 0x00, 0x00, 0x4A, 0xFC, 0x0D
+    };
+    uint32_t now;
+
+    setup();
+    CHECK(bring_up());
+    now = g_now;
+
+    host_retries_at(0x32u, written, 1u, set_byte_req, sizeof set_byte_req,
+                    100u, set_byte_ok, sizeof set_byte_ok, &now);
+    host_retries_at(0x33u, seq, 1u, bump_req, sizeof bump_req,
+                    100u, bump_ok, sizeof bump_ok, &now);
+    host_retries_at(0x30u, NULL, 0u, get_chip_req, sizeof get_chip_req,
+                    50u, get_chip_ok, sizeof get_chip_ok, &now);
+    host_retries_at(0x31u, NULL, 0u, get_byte_req, sizeof get_byte_req,
+                    50u, get_byte_ok, sizeof get_byte_ok, &now);
+}
+
 /* A board command other than 0x30-0x33 answers 0x04. */
 static void test_other_board_command_is_unsupported(void)
 {
@@ -473,5 +565,6 @@ int main(void)
     test_new_sequence_returns_the_next_count();
     test_replay_keeps_the_count();
     test_other_board_command_is_unsupported();
+    test_f429_ceilings_are_per_command();
     return ecsp_test_report();
 }

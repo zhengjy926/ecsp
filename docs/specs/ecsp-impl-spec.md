@@ -82,9 +82,8 @@ CMakeLists.txt             只用于本机测试，库源码不依赖 CMake
 | `ECSP_SLAVE_TXN_CACHE` | 4 | 事务缓存条目数（每条目约占 `ECSP_MAX_FRAME` + 4 字节上下文 RAM）；0 表示关闭去重（不推荐） |
 | `ECSP_HOST_SLAVES` | 8 | 每个主机上下文可管理的从机槽位数 |
 | `ECSP_HEARTBEAT_MS` | 1000 | 就绪后 0x10 心跳的周期，规范允许 ±10%；产品覆盖时须同步调整掉线门限（规范 5.2.16、7.2.1）。等待握手时的 0x01 上报由规范 4.1.2 固定为 1 Hz，没有对应宏 |
-| `ECSP_RESP_DEFAULT_MS` | 50 | 目录里获取类、设置类、动作类和握手共用的应答时限（规范 7.1）。0x07、0x03、0x05、0x0C 不用它。产品只允许放宽。只放宽别的命令不改变它 |
+| `ECSP_RESP_DEFAULT_MS` | 50 | 目录里获取类、设置类、动作类和握手共用的应答时限（规范 7.1）。板卡命令没有写明毫秒数时也用它。0x07、0x03、0x05、0x0C 不用它。产品只允许放宽。只放宽别的命令不改变它 |
 | `ECSP_RESP_RESET_MS` | 50 | 目录里系统复位（0x07）自己的应答时限。数值与默认值相同。只放宽它不改变 `ECSP_RESP_DEFAULT_MS`，也不拉长其它命令 |
-| `ECSP_RESP_UNLISTED_MS` | 100 | 目录没有的命令（板卡命令）主机仍等待的毫秒数。板卡命令表写明应答时限之前，保持这些命令今天的上限 |
 | `ECSP_RESP_IDENTITY_MS` | 3000 | 目录里设置硬件版本（0x03）与设置序列号（0x05）的应答时限（规范 7.1）。产品只允许放宽。等待该应答时，3 s 掉线判据不截断含初发共 3 次的重发 |
 | `ECSP_RESP_UPGRADE_MS` | 500 | 目录里在线升级（0x0C）第一次应答的时限（规范 7.1） |
 | `ECSP_SESSION_SETUP_MS` | 5000 | 上电至可下发业务命令的会话建立总时限（规范 4.1.1、表 7-2）。产品只允许放宽 |
@@ -141,7 +140,7 @@ size_t ecsp_frame_encode(uint8_t *buf, size_t cap,
 | 0x07 | 50 ms，`ECSP_RESP_RESET_MS`。单独保存，放宽它不改变上一行 |
 | 0x03、0x05 | 3 s，`ECSP_RESP_IDENTITY_MS` |
 | 0x0C 的第一次应答 | 500 ms，`ECSP_RESP_UPGRADE_MS` |
-| 目录没有的命令 | 100 ms，`ECSP_RESP_UNLISTED_MS` |
+| 板卡命令 | 命令表上写明的毫秒数；没写，或主机没有这张表，则 50 ms，`ECSP_RESP_DEFAULT_MS` |
 
 获取类、设置类、动作类和握手引用同一个宏。产品用 `-D` 放宽该宏时，目录里引用它的条目一起放宽。0x07 不引用它。字段解析只做字段级校验，不判断会话状态（那是 L3 的事）。
 
@@ -170,7 +169,7 @@ int ecsp_low_power_mode_valid(uint8_t mode);                                /* 0
 
 ## 6 L3 从机引擎
 
-`ecsp_cmd_flags_t` 定义在 L2 的 `cmds.h`，从机头文件包含它。板卡命令表与通用命令目录用同一组比特。
+`ecsp_cmd_flags_t` 与 `ecsp_cmd_entry_t` 定义在 L2 的 `cmds.h`，从机和主机都包含它，两边互不引用。板卡命令表与通用命令目录用同一组比特。从机管线读标志，不读 `resp_ms`。
 
 ```c
 typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
@@ -193,7 +192,8 @@ typedef struct {
     uint16_t req_len;  /* 请求载荷精确长度；ECSP_CMD_LEN_ANY = 由 validate 校验 */
     uint16_t resp_max; /* 应答数据（不含应答码）最大长度 */
     ecsp_cmd_validate_t validate;  /* 可选的第 8 步参数校验 */
-    ecsp_slave_handler_t handler;
+    ecsp_slave_handler_t handler;  /* 主机不调用；只给主机的表可以留空 */
+    uint16_t resp_ms;  /* 写明的应答时限；0 表示没写。从机不读 */
 } ecsp_cmd_entry_t;
 
 typedef struct {
@@ -316,6 +316,8 @@ typedef struct {
     size_t   tx_cap;               /* 至少一帧最小帧；装不下的业务帧在 submit 返回 ECSP_E_CAP */
     ecsp_host_event_cb_t on_event; /* 可为 NULL */
     void *user;
+    const ecsp_cmd_entry_t *board_cmds; /* 不拷贝；NULL 表示没有表。须比主机活得久 */
+    size_t board_cmd_count;             /* board_cmds 为 NULL 时必须是 0 */
 } ecsp_host_cfg_t;
 
 int  ecsp_host_init(ecsp_host_t *h, const ecsp_host_cfg_t *cfg);
@@ -332,7 +334,7 @@ void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 
 `ecsp_host_submit` 在会话不是“正常通信”时返回 `ECSP_E_STATE`，不入队、不发帧。会话为“正常通信”且该从机已确认低功耗时，除 0x0B（进入/退出）与 0x07 外的业务命令返回 `ECSP_E_LOW_POWER`，不入队、不发帧（与 `ECSP_E_STATE` 区分）。会话为“正常通信”且当前事务空闲时，把业务命令标为“待发送”；下一拍 `ecsp_host_step` 才写入发送 FIFO 并进入“等待应答”。同一从机同时只保留一个在途事务，第二个 `submit` 返回 `ECSP_E_CAP`。事务在途时会话状态保持“正常通信”。`cb` 在事务结束时于 step 栈上调用恰好一次：应答到达为 `ECSP_OK`（`payload` 不含应答码），重发耗尽为 `ECSP_E_TIMEOUT`，心跳掉线取消在途事务为 `ECSP_E_OFFLINE`，发送 FIFO 装不下为 `ECSP_E_LINK`。step 进行中提交的请求留到下一次 step 再发，多台从机按提交先后写入发送 FIFO。收到进入低功耗的 0x00 后主机暂停该从机掉线判定；退出 0x00、握手重建或复位清掉该暂停。
 
-**上电与掉线（#9、#10）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限取目录里 0x01 的毫秒数（`ECSP_RESP_DEFAULT_MS`，50 ms），含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”并上报 `ECSP_HOST_EV_PROBE_FAILED`，进入被动等待：收到该从机的空载荷 0x01 上报后，同一拍重新下发握手请求。自第一次 step 起超过 `ECSP_SESSION_SETUP_MS` 仍未进入“正常通信”或“版本不符”，会话改为“掉线”并上报 `ECSP_HOST_EV_OFFLINE`。应答码不是 0x00 则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT`。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 的时限取目录里的 50 ms，三次无应答回到“未连接”并上报失败。版本 7 字节相等进入“正常通信”，不相等停在“版本不符”。进入“正常通信”后，业务命令按目录里该命令的应答时限重发，主机不读命令类别。含初发最多 3 次，重发复用提交时的载荷（事务序号不变）；次数用尽则会话“掉线”、事务回“空闲”。目录没有的命令（板卡命令）用 `ECSP_RESP_UNLISTED_MS`（100 ms）。设置硬件版本（0x03）与设置序列号（0x05）的时限是目录里的 3 s，不是 50 ms。0x08 的受理应答和 0x0B 是 50 ms。0x07 是它自己的 50 ms（`ECSP_RESP_RESET_MS`）。0x0C 的第一次应答是 500 ms。应答一旦到达事务立即结束。等待 0x03/0x05 时，3 s 掉线判据不截断那 3 次重发；三次仍无应答才以 `ECSP_E_TIMEOUT` 结束。应答码不是 0x00 则结束事务且不重发。长耗时命令的结果事件和获取结果取目录的三元组：0x08 对应 0x0A 与 0x09，0x0C 对应 0x0E 与 0x0D。连续 `3 * ECSP_HEARTBEAT_MS` 未收到该从机任何有效帧同样“掉线”；若当时有在途事务，回调只触发这一次，不再另发一帧重试。掉线后业务命令被本地拒绝。收到握手上报才重新探测，版本核对通过后才回到“正常通信”。一台从机掉线不影响其它槽位。
+**上电与掉线（#9、#10）**：第一次 `ecsp_host_step` 对每个已配置从机主动下发 0x01，会话进入“握手中”。应答时限取目录里 0x01 的毫秒数（`ECSP_RESP_DEFAULT_MS`，50 ms），含初发最多 3 次，重发字节与初发相同。三次仍无应答则回到“未连接”并上报 `ECSP_HOST_EV_PROBE_FAILED`，进入被动等待：收到该从机的空载荷 0x01 上报后，同一拍重新下发握手请求。自第一次 step 起超过 `ECSP_SESSION_SETUP_MS` 仍未进入“正常通信”或“版本不符”，会话改为“掉线”并上报 `ECSP_HOST_EV_OFFLINE`。应答码不是 0x00 则停止并上报 `ECSP_HOST_EV_REJECTED`，不把这次应答当成静默再重发。发送 FIFO 装不下这一帧则上报 `ECSP_HOST_EV_LINK_FAULT`。收到 0x00 后会话为“已握手”，同一拍下发 0x02；0x02 的时限取目录里的 50 ms，三次无应答回到“未连接”并上报失败。版本 7 字节相等进入“正常通信”，不相等停在“版本不符”。进入“正常通信”后，业务命令按目录里该命令的应答时限重发，主机不读命令类别。含初发最多 3 次，重发复用提交时的载荷（事务序号不变）；次数用尽则会话“掉线”、事务回“空闲”。板卡命令用调用方命令表上写明的毫秒数；该条没写，或主机没有这张表，则用 50 ms。主机不读命令类别，也不调用表里的处理函数。设置硬件版本（0x03）与设置序列号（0x05）的时限是目录里的 3 s，不是 50 ms。0x08 的受理应答和 0x0B 是 50 ms。0x07 是它自己的 50 ms（`ECSP_RESP_RESET_MS`）。0x0C 的第一次应答是 500 ms。应答一旦到达事务立即结束。等待 0x03/0x05 时，3 s 掉线判据不截断那 3 次重发；三次仍无应答才以 `ECSP_E_TIMEOUT` 结束。应答码不是 0x00 则结束事务且不重发。长耗时命令的结果事件和获取结果取目录的三元组：0x08 对应 0x0A 与 0x09，0x0C 对应 0x0E 与 0x0D。连续 `3 * ECSP_HEARTBEAT_MS` 未收到该从机任何有效帧同样“掉线”；若当时有在途事务，回调只触发这一次，不再另发一帧重试。掉线后业务命令被本地拒绝。收到握手上报才重新探测，版本核对通过后才回到“正常通信”。一台从机掉线不影响其它槽位。
 
 **上传模式**：主机链路不保存这个开关。0x0F 的静默上限是目录里的 50 ms，不是 3 s。长耗时命令受理后，即使结果事件不会到来，主机仍等到 `T_exec_max` 才发配对的获取结果，不提前轮询。
 
@@ -357,7 +359,7 @@ void ecsp_host_tx_drain(ecsp_host_t *h, size_t n);
 | 获取类、握手、0x08 受理、0x0B、0x0F | ≤50 ms | 规范 7.1，目录条目 `ECSP_RESP_DEFAULT_MS` |
 | 0x07 | ≤50 ms | 规范 7.1，目录条目 `ECSP_RESP_RESET_MS` |
 | 设置硬件版本 / 设置序列号首次应答 | ≤3 s | 规范 7.1，目录条目 `ECSP_RESP_IDENTITY_MS` |
-| 目录没有的命令 | ≤100 ms | `ECSP_RESP_UNLISTED_MS` |
+| 板卡命令 | 表上的毫秒数，否则 ≤50 ms | 命令表 `resp_ms`；0 或没有表则 `ECSP_RESP_DEFAULT_MS` |
 | 在线升级首次应答 | ≤500 ms | 规范 7.1，目录条目 |
 | 心跳周期 | 1000 ms ±10% | 规范 5.2.16 |
 | 掉线门限 | 3 个心跳周期 | 规范 7.2.1 |

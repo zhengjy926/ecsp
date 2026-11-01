@@ -37,30 +37,6 @@
 #include "ecsp/config.h"
 #include "ecsp/frame.h"
 
-typedef struct ecsp_slave ecsp_slave_t;
-
-/* Optional parameter validator, run at step 8 before the handler. It returns
- * ECSP_OK when the payload parameters are acceptable, ECSP_E_LEN when the
- * variable-length payload is malformed (answered 0x02), or ECSP_E_VAL when a
- * value is illegal (answered 0x03). */
-typedef int (*ecsp_cmd_validate_t)(const ecsp_frame_t *req);
-
-/* Command handler. Called only after the pipeline's address, command, session,
- * length and parameter gates have accepted the frame, so the handler must not
- * repeat those checks.
- *
- * `resp` receives the response payload DATA (the response code is NOT part of
- * it); `cap` is its capacity. The return value is the response code (0..0xFF)
- * placed in the frame; the engine never overrides it. Data is sent only when
- * the return value is ECSP_RS_OK - an error response carries only the response
- * code.
- *
- * The engine reserves room for the command's largest possible answer before
- * calling the handler, so a full transmit FIFO does not cause the handler to
- * run twice. */
-typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
-                                    uint8_t *resp, size_t cap, size_t *resp_len);
-
 /* Product safe-abort sequence for the in-flight long-running command
  * (spec 4.4, ADR-0007). Runs on the ecsp_slave_step stack, before the
  * answer is queued. Return ECSP_OK once the actuator is in a safe state.
@@ -76,27 +52,6 @@ typedef int (*ecsp_slave_safe_abort_t)(ecsp_slave_t *s, uint8_t cmd);
  * transaction (spec 4.2). Getters, setters and idempotent actions carry no
  * sequence and are never deduplicated; a command sets at most one of
  * ECSP_CMD_IDEMPOTENT and ECSP_CMD_TXN_SEQ. */
-
-/* Exact request payload length for a command that has not declared one; the
- * command's validator owns the length check (returning ECSP_E_LEN -> 0x02). */
-#define ECSP_CMD_LEN_ANY 0xFFFFu
-
-typedef struct {
-    uint8_t  cmd;
-    uint8_t  flags;    /* ecsp_cmd_flags_t bits */
-    uint16_t req_len;  /* exact request payload length, or ECSP_CMD_LEN_ANY */
-    uint16_t resp_max; /* largest response DATA length (response code excluded) */
-    ecsp_cmd_validate_t validate; /* optional step-8 parameter gate */
-    ecsp_slave_handler_t handler;
-} ecsp_cmd_entry_t;
-
-/* Caller-owned compile-time table of board commands (0x30-0xEF). Lookup is a
- * linear scan; the table does not need to be sorted. A command code that is
- * missing from the table is answered 0x04. */
-typedef struct {
-    const ecsp_cmd_entry_t *table;
-    size_t table_len;
-} ecsp_cmd_table_t;
 
 /* Caller-owned identity storage (spec 5.2.3, 5.2.5). The library does not
  * touch non-volatile memory itself. A registered commit callback receives

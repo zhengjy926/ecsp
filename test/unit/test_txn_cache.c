@@ -104,18 +104,20 @@ static int checked_validator(const ecsp_frame_t *req)
 }
 
 static const ecsp_cmd_entry_t g_board_table[] = {
-    { TXN_CMD, ECSP_CMD_TXN_SEQ, 1u, 2u, NULL, txn_handler },
+    { TXN_CMD, ECSP_CMD_TXN_SEQ, 1u, 2u, NULL, txn_handler, 100u },
     { TXN_ANY_CMD, ECSP_CMD_TXN_SEQ, ECSP_CMD_LEN_ANY, 0u, NULL,
-      any_txn_handler },
-    { PLAIN_CMD, ECSP_CMD_NONE, 1u, 1u, NULL, plain_handler },
-    { BIG_CMD, ECSP_CMD_TXN_SEQ, 1u, (uint16_t)BIG_DATA, NULL, big_handler },
-    { CHECKED_CMD, ECSP_CMD_TXN_SEQ, 2u, 2u, checked_validator, txn_handler }
+      any_txn_handler, 0u },
+    { PLAIN_CMD, ECSP_CMD_NONE, 1u, 1u, NULL, plain_handler, 0u },
+    { BIG_CMD, ECSP_CMD_TXN_SEQ, 1u, (uint16_t)BIG_DATA, NULL, big_handler,
+      0u },
+    { CHECKED_CMD, ECSP_CMD_TXN_SEQ, 2u, 2u, checked_validator, txn_handler,
+      0u }
 };
 
 /* A table without the whole-frame answer, so a context can be configured with
  * a transmit FIFO that holds only one small answer. */
 static const ecsp_cmd_entry_t g_small_table[] = {
-    { TXN_CMD, ECSP_CMD_TXN_SEQ, 1u, 2u, NULL, txn_handler }
+    { TXN_CMD, ECSP_CMD_TXN_SEQ, 1u, 2u, NULL, txn_handler, 0u }
 };
 
 static void init_slave_cfg(const ecsp_cmd_entry_t *table, size_t table_len,

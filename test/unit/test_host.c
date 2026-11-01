@@ -107,6 +107,8 @@ static uint8_t *g_tx_use;
 static size_t g_tx_cap;
 static ecsp_host_t g_host;
 static ecsp_host_slave_cfg_t g_slaves[2];
+static const ecsp_cmd_entry_t *g_board_cmds;
+static size_t g_board_cmd_count;
 
 static int g_events;
 static int g_event;
@@ -226,6 +228,35 @@ static const uint8_t low_power_req[] = {
 };
 static const uint8_t low_power_ok[] = {
     0xFA, 0x0A, 0x00, 0x03, 0x0B, 0x02, 0x00, 0x70, 0x57, 0x0D
+};
+
+/* Board spec 5.3.1, 5.3.2, 5.3.3, 5.3.4. P=0x03 B=0x02. */
+static const uint8_t get_chip_id_req[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x30, 0x02, 0x9D, 0xC0, 0x0D
+};
+static const uint8_t get_test_byte_req[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x31, 0x02, 0x9C, 0x50, 0x0D
+};
+static const uint8_t set_test_byte_req[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x32, 0x02, 0xA5, 0x60, 0x21, 0x0D
+};
+static const uint8_t set_test_byte_ok[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x32, 0x02, 0x00, 0xA0, 0x5A, 0x0D
+};
+static const uint8_t bump_counter_req[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x33, 0x02, 0x01, 0x30, 0x5A, 0x0D
+};
+static const uint8_t get_chip_id_ok[] = {
+    0xFA, 0x16, 0x00, 0x03, 0x30, 0x02, 0x00,
+    0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67,
+    0x75, 0xFB, 0x0D
+};
+static const uint8_t get_test_byte_ok[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x31, 0x02, 0x00, 0x00, 0x4A, 0xFC, 0x0D
+};
+static const uint8_t bump_counter_ok[] = {
+    0xFA, 0x0E, 0x00, 0x03, 0x33, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x52, 0xFA, 0x0D
 };
 
 /* spec 5.2.16 heartbeat, used as a valid frame that is not a command answer. */
@@ -364,6 +395,8 @@ static void init_host(ecsp_host_event_cb_t on_event_fn, void *user)
     cfg.tx_cap = (g_tx_use != NULL) ? g_tx_cap : sizeof g_tx;
     cfg.on_event = on_event_fn;
     cfg.user = user;
+    cfg.board_cmds = g_board_cmds;
+    cfg.board_cmd_count = g_board_cmd_count;
     CHECK_EQ(0, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -826,6 +859,8 @@ static void init_two(void)
     cfg.tx_cap = sizeof g_tx;
     cfg.on_event = on_event;
     cfg.user = NULL;
+    cfg.board_cmds = NULL;
+    cfg.board_cmd_count = 0u;
     CHECK_EQ(0, ecsp_host_init(&g_host, &cfg));
 }
 
@@ -1044,6 +1079,8 @@ static void test_callback_steps_a_different_host(void)
     cfg.tx_cap = sizeof tx;
     cfg.on_event = NULL;
     cfg.user = NULL;
+    cfg.board_cmds = NULL;
+    cfg.board_cmd_count = 0u;
     CHECK_EQ(ECSP_OK, ecsp_host_init(&peer, &cfg));
     g_peer = &peer;
 
@@ -1097,6 +1134,8 @@ static void test_two_hosts_keep_separate_fifos(void)
     ca.tx_cap = sizeof tx_a;
     ca.on_event = NULL;
     ca.user = NULL;
+    ca.board_cmds = NULL;
+    ca.board_cmd_count = 0u;
 
     cb.product_addr = 0x03u;
     cb.slaves = &sb;
@@ -1107,6 +1146,8 @@ static void test_two_hosts_keep_separate_fifos(void)
     cb.tx_cap = sizeof tx_b;
     cb.on_event = NULL;
     cb.user = NULL;
+    cb.board_cmds = NULL;
+    cb.board_cmd_count = 0u;
 
     CHECK_EQ(ECSP_OK, ecsp_host_init(&a, &ca));
     CHECK_EQ(ECSP_OK, ecsp_host_init(&b, &cb));
@@ -1539,6 +1580,136 @@ static void test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D(void)
     CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
 }
 
+/* No board command table: a board command waits the shared 50 ms default.
+ * One millisecond early is still silence. The bytes are the board spec's
+ * 0x32 example, sent again unchanged. */
+static void test_board_command_without_a_table_retries_at_50ms(void)
+{
+    static const uint8_t payload[1] = { 0xA5u };
+
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, 0x32u,
+                                      payload, 1u, on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(set_test_byte_req, sizeof set_test_byte_req);
+
+    step_at(20u + DEFAULT_MS - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(20u + DEFAULT_MS);
+    expect_bytes(set_test_byte_req, sizeof set_test_byte_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+}
+
+/* One stated ceiling: nothing leaves until that silence, then the same
+ * request. The answer that follows lets the next command start. */
+static void retry_then_answer(uint8_t cmd, const uint8_t *payload, uint16_t plen,
+                              const uint8_t *frame, size_t frame_len,
+                              uint32_t ceiling, const uint8_t *answer,
+                              size_t answer_len, uint32_t *now)
+{
+    uint32_t t = *now;
+
+    g_txn_calls = 0;
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, cmd, payload, plen,
+                                      on_txn, &g_txn_marker));
+    step_at(t);
+    expect_bytes(frame, frame_len);
+
+    step_at(t + ceiling - 1u);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(t + ceiling);
+    expect_bytes(frame, frame_len);
+    CHECK_EQ(0, g_txn_calls);
+
+    ecsp_host_rx(&g_host, answer, answer_len);
+    step_at(t + ceiling);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+    *now = t + ceiling;
+}
+
+/* A table that states 100 ms on 0x32 and 0x33, and nothing on 0x30 and 0x31.
+ * 0x32 is marked 获取类 and 0x30 is not: the wait follows resp_ms, not the
+ * flag. Handlers are NULL. */
+static void test_board_table_millisecond_is_the_wait(void)
+{
+    static const uint8_t written[1] = { 0xA5u };
+    static const uint8_t seq[1] = { 0x01u };
+    static const ecsp_cmd_entry_t table[] = {
+        { 0x30u, 0u, 0u, 12u, NULL, NULL, 0u },
+        { 0x31u, ECSP_CMD_QUERY, 0u, 1u, NULL, NULL, 0u },
+        { 0x32u, ECSP_CMD_QUERY, 1u, 0u, NULL, NULL, 100u },
+        { 0x33u, 0u, 1u, 4u, NULL, NULL, 100u }
+    };
+    uint32_t now = 20u;
+
+    g_board_cmds = table;
+    g_board_cmd_count = sizeof table / sizeof table[0];
+    reach_normal();
+    g_board_cmds = NULL;
+    g_board_cmd_count = 0u;
+
+    retry_then_answer(0x32u, written, 1u, set_test_byte_req,
+                      sizeof set_test_byte_req, 100u, set_test_byte_ok,
+                      sizeof set_test_byte_ok, &now);
+    retry_then_answer(0x33u, seq, 1u, bump_counter_req,
+                      sizeof bump_counter_req, 100u, bump_counter_ok,
+                      sizeof bump_counter_ok, &now);
+    retry_then_answer(0x30u, NULL, 0u, get_chip_id_req,
+                      sizeof get_chip_id_req, DEFAULT_MS, get_chip_id_ok,
+                      sizeof get_chip_id_ok, &now);
+    retry_then_answer(0x31u, NULL, 0u, get_test_byte_req,
+                      sizeof get_test_byte_req, DEFAULT_MS, get_test_byte_ok,
+                      sizeof get_test_byte_ok, &now);
+}
+
+/* An answer inside the stated 100 ms ends the transaction at once.
+ * The rest of that ceiling does not produce another request. */
+static void test_board_answer_before_the_ceiling_ends_the_wait(void)
+{
+    static const uint8_t written[1] = { 0xA5u };
+    static const ecsp_cmd_entry_t table[] = {
+        { 0x32u, ECSP_CMD_QUERY, 1u, 0u, NULL, NULL, 100u }
+    };
+
+    g_txn_calls = 0;
+    g_board_cmds = table;
+    g_board_cmd_count = sizeof table / sizeof table[0];
+    reach_normal();
+    g_board_cmds = NULL;
+    g_board_cmd_count = 0u;
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, 0x32u, written, 1u,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(set_test_byte_req, sizeof set_test_byte_req);
+
+    ecsp_host_rx(&g_host, set_test_byte_ok, sizeof set_test_byte_ok);
+    step_at(30u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + 100u);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
 /* spec 7.1: setting the serial number waits the same 3 s, not 50 ms. */
 static void test_serial_write_waits_3s_not_50ms(void)
 {
@@ -1596,5 +1767,8 @@ int main(void)
     test_upgrade_accept_retries_at_500ms();
     test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D();
     test_serial_write_waits_3s_not_50ms();
+    test_board_command_without_a_table_retries_at_50ms();
+    test_board_table_millisecond_is_the_wait();
+    test_board_answer_before_the_ceiling_ends_the_wait();
     return ecsp_test_report();
 }
