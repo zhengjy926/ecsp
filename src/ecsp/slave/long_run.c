@@ -16,10 +16,14 @@ static uint16_t exec_max_of(uint8_t cmd)
 
 static uint8_t event_cmd_of(uint8_t cmd)
 {
-    if (cmd == ECSP_CMD_START_UPGRADE) {
-        return ECSP_CMD_UPGRADE_REPORT;
+    uint8_t event_cmd = 0u;
+    uint8_t query_cmd = 0u;
+
+    if (ecsp_catalog_long_run(cmd, &event_cmd, &query_cmd) != 0) {
+        (void)query_cmd;
+        return event_cmd;
     }
-    return ECSP_CMD_SELFTEST_REPORT;
+    return 0u;
 }
 
 static void store_result(ecsp_slave_t *s, uint8_t cmd,

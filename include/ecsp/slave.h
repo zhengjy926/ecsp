@@ -61,21 +61,6 @@ typedef int (*ecsp_cmd_validate_t)(const ecsp_frame_t *req);
 typedef int (*ecsp_slave_handler_t)(ecsp_slave_t *s, const ecsp_frame_t *req,
                                     uint8_t *resp, size_t cap, size_t *resp_len);
 
-typedef enum {
-    ECSP_CMD_NONE       = 0,
-    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* accepted while long-running; a stop
-                                     * reaches its handler (spec 4.3.1, 4.4) */
-    ECSP_CMD_IDEMPOTENT = 1u << 1,  /* idempotent action: carries no transaction seq */
-    ECSP_CMD_TXN_SEQ    = 1u << 2,  /* non-idempotent action: payload[0] is the
-                                     * transaction sequence, and the answer is
-                                     * cached by (cmd, seq) and replayed (4.2) */
-    ECSP_CMD_QUERY      = 1u << 3,  /* getter: accepted while long-running,
-                                     * does not preempt (spec 4.3) */
-    ECSP_CMD_CONCURRENT = 1u << 4   /* orthogonal action: accepted while
-                                     * long-running, does not preempt
-                                     * (spec 4.3.1) */
-} ecsp_cmd_flags_t;
-
 /* Product safe-abort sequence for the in-flight long-running command
  * (spec 4.4, ADR-0007). Runs on the ecsp_slave_step stack, before the
  * answer is queued. Return ECSP_OK once the actuator is in a safe state.

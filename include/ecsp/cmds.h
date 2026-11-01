@@ -2,13 +2,18 @@
 #define ECSP_CMDS_H
 
 /*
- * L2 common-command codec (docs/specs/ecsp-impl-spec.md section 5).
+ * L2 common-command catalog and field parsers (docs/specs/ecsp-impl-spec.md
+ * section 5).
  *
- * Ticket #5 scope: the fixed-layout payloads of the passthrough commands -
- * software/hardware version (5.2.2, 5.2.3), serial number (5.2.5), low-power
- * mode (5.2.11) - plus the command and response codes this slice uses.
+ * The catalog is the one place that states, for each common command, the
+ * request length, the largest response data, the command class, whether the
+ * payload starts with a transaction sequence, the silence ceiling, and the
+ * long-running triple. The slave pipeline reads the class, the length and
+ * the sequence flag. The host reads the silence ceiling and the triple, and
+ * does not read the class. 0x0F is not a request. Event codes are listed and
+ * are not requests.
  *
- * These functions only validate and copy fields. They never look at session
+ * The parsers only validate and copy fields. They never look at session
  * state, transaction state or the node's identity storage; that is L3's job.
  * Length errors return ECSP_E_LEN and value/format errors return ECSP_E_VAL so
  * the two failure kinds stay distinguishable: L3's length gate answers 0x02,
@@ -68,6 +73,31 @@ typedef struct {
 #define ECSP_CMD_COMMON_MAX 0x2Fu
 #define ECSP_CMD_BOARD_MIN  0x30u
 #define ECSP_CMD_BOARD_MAX  0xEFu
+
+/* Command class and the transaction-sequence flag. The same bits are stored
+ * in the catalog and in a board command table. The host does not consult
+ * them when choosing a silence ceiling. */
+typedef enum {
+    ECSP_CMD_NONE       = 0,
+    ECSP_CMD_PREEMPTIVE = 1u << 0,  /* accepted while long-running; a stop
+                                     * reaches its handler (spec 4.3.1, 4.4) */
+    ECSP_CMD_IDEMPOTENT = 1u << 1,  /* idempotent action: carries no transaction seq */
+    ECSP_CMD_TXN_SEQ    = 1u << 2,  /* non-idempotent action: payload[0] is the
+                                     * transaction sequence, and the answer is
+                                     * cached by (cmd, seq) and replayed (4.2) */
+    ECSP_CMD_QUERY      = 1u << 3,  /* getter: accepted while long-running,
+                                     * does not preempt (spec 4.3) */
+    ECSP_CMD_CONCURRENT = 1u << 4   /* orthogonal action: accepted while
+                                     * long-running, does not preempt
+                                     * (spec 4.3.1) */
+} ecsp_cmd_flags_t;
+
+int ecsp_catalog_request(uint8_t cmd, uint8_t *flags, uint16_t *req_len,
+                         uint16_t *resp_max);
+int ecsp_catalog_resp_ms(uint8_t cmd, uint32_t *resp_ms);
+int ecsp_catalog_long_run(uint8_t action, uint8_t *event_cmd,
+                          uint8_t *query_cmd);
+uint16_t ecsp_catalog_max_resp_data(void);
 
 /* Response codes (spec 3.6), the subset this slice emits. */
 #define ECSP_RS_OK             0x00u

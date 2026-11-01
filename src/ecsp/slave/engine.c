@@ -20,17 +20,14 @@
 #error "ECSP_MAX_FRAME is too small for the largest common-command response"
 #endif
 
-/* Internal descriptor for a common command implemented by the library. The
- * common table owns address/session/length/parameter gating, so handlers only
- * execute the action. */
+/* Handler for a common command. Length, class, transaction-sequence and
+ * response size come from the catalog, so this table cannot drift from the
+ * host's copy of those facts. */
 typedef struct {
-    uint8_t  cmd;
-    uint8_t  flags;
-    uint16_t req_len;
-    uint16_t resp_max; /* largest response DATA length this handler emits */
+    uint8_t cmd;
     ecsp_cmd_validate_t validate;
     ecsp_slave_handler_t handler;
-} common_cmd_t;
+} common_handler_t;
 
 /* ---- parameter validators (ADR-0002 step 8) ---- */
 
@@ -222,48 +219,33 @@ static int h_get_fault(ecsp_slave_t *s, const ecsp_frame_t *req,
     return ECSP_RS_OK;
 }
 
-/* Common commands, in command-code order. Event-class codes (0x0A, 0x0E,
- * 0x10, 0x11) stay out of this table: a host request using one is 0x04.
- * 0x0F is a later ticket. */
-static const common_cmd_t g_common_cmds[] = {
-    { ECSP_CMD_HANDSHAKE, ECSP_CMD_PREEMPTIVE, 0u, 0u, NULL,
-      h_handshake },
-    { ECSP_CMD_GET_VERSION, ECSP_CMD_QUERY, 0u, ECSP_VERSION_LEN, NULL,
-      h_get_version },
-    { ECSP_CMD_SET_HW_VERSION, 0u, ECSP_VERSION_LEN, 0u, valid_hw_version,
-      h_set_hw_version },
-    { ECSP_CMD_GET_HW_VERSION, ECSP_CMD_QUERY, 0u, ECSP_VERSION_LEN, NULL,
-      h_get_hw_version },
-    { ECSP_CMD_SET_SERIAL, 0u, ECSP_SERIAL_LEN, 0u, valid_serial_number,
-      h_set_serial_number },
-    { ECSP_CMD_GET_SERIAL, ECSP_CMD_QUERY, 0u, ECSP_SERIAL_LEN, NULL,
-      h_get_serial_number },
-    { ECSP_CMD_SYSTEM_RESET, (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
-      ECSP_TXN_SEQ_LEN, 0u, NULL, h_system_reset },
-    { ECSP_CMD_CONTROL_SELFTEST,
-      (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
-      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, valid_long_ctrl,
-      h_long_action },
-    { ECSP_CMD_GET_SELFTEST, ECSP_CMD_QUERY, 0u, 1u, NULL, h_long_query },
-    { ECSP_CMD_SET_LOW_POWER, 0u, 1u, 0u, valid_low_power_mode,
-      h_set_low_power },
-    { ECSP_CMD_START_UPGRADE,
-      (uint8_t)(ECSP_CMD_PREEMPTIVE | ECSP_CMD_TXN_SEQ),
-      (uint16_t)(ECSP_TXN_SEQ_LEN + ECSP_CTRL_LEN), 2u, valid_long_ctrl,
-      h_long_action },
-    { ECSP_CMD_GET_UPGRADE, ECSP_CMD_QUERY, 0u, 1u, NULL, h_long_query },
-    { ECSP_CMD_GET_FAULT, ECSP_CMD_QUERY, 0u, 1u, NULL, h_get_fault },
+/* Common commands the library executes. Event codes and 0x0F are not here:
+ * the catalog says they are not requests, so a host frame using one is 0x04. */
+static const common_handler_t g_common_handlers[] = {
+    { ECSP_CMD_HANDSHAKE, NULL, h_handshake },
+    { ECSP_CMD_GET_VERSION, NULL, h_get_version },
+    { ECSP_CMD_SET_HW_VERSION, valid_hw_version, h_set_hw_version },
+    { ECSP_CMD_GET_HW_VERSION, NULL, h_get_hw_version },
+    { ECSP_CMD_SET_SERIAL, valid_serial_number, h_set_serial_number },
+    { ECSP_CMD_GET_SERIAL, NULL, h_get_serial_number },
+    { ECSP_CMD_SYSTEM_RESET, NULL, h_system_reset },
+    { ECSP_CMD_CONTROL_SELFTEST, valid_long_ctrl, h_long_action },
+    { ECSP_CMD_GET_SELFTEST, NULL, h_long_query },
+    { ECSP_CMD_SET_LOW_POWER, valid_low_power_mode, h_set_low_power },
+    { ECSP_CMD_START_UPGRADE, valid_long_ctrl, h_long_action },
+    { ECSP_CMD_GET_UPGRADE, NULL, h_long_query },
+    { ECSP_CMD_GET_FAULT, NULL, h_get_fault },
 };
 
-#define ECSP_COMMON_CMD_COUNT \
-    (sizeof g_common_cmds / sizeof g_common_cmds[0])
+#define ECSP_COMMON_HANDLER_COUNT \
+    (sizeof g_common_handlers / sizeof g_common_handlers[0])
 
-static const common_cmd_t *find_common_cmd(uint8_t cmd)
+static const common_handler_t *find_common_handler(uint8_t cmd)
 {
     size_t i;
-    for (i = 0u; i < ECSP_COMMON_CMD_COUNT; i++) {
-        if (g_common_cmds[i].cmd == cmd) {
-            return &g_common_cmds[i];
+    for (i = 0u; i < ECSP_COMMON_HANDLER_COUNT; i++) {
+        if (g_common_handlers[i].cmd == cmd) {
+            return &g_common_handlers[i];
         }
     }
     return NULL;
@@ -307,7 +289,7 @@ int ecsp_slave_init(ecsp_slave_t *s, const ecsp_slave_cfg_t *cfg)
     /* The transmit FIFO must hold the largest answer the engine can queue:
      * the largest common response or any response declared by the board
      * table. */
-    min_tx = ECSP_FRAME_MIN_LEN + 1u + ECSP_SERIAL_LEN;
+    min_tx = ECSP_FRAME_MIN_LEN + 1u + (size_t)ecsp_catalog_max_resp_data();
     for (i = 0u; i < cfg->cmds.table_len; i++) {
         size_t need;
         if (cfg->cmds.table[i].resp_max > ECSP_RESP_DATA_CAP) {
@@ -503,9 +485,10 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
     for (;;) {
         ecsp_frame_t frame;
         size_t consumed = 0u;
-        const common_cmd_t *common;
+        const common_handler_t *common;
         const ecsp_cmd_entry_t *board;
         uint16_t req_len;
+        uint16_t answer_max;
         size_t max_data;
         uint8_t flags;
         uint8_t seq;
@@ -532,15 +515,20 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             continue;
         }
 
-        /* Step 3: undefined command or wrong direction -> 0x04. Common
-         * commands live in the library; board commands come from the caller's
-         * table. Event-class codes are absent from both, so a host request
-         * using one is answered 0x04 here. */
+        /* Step 3: undefined command or wrong direction -> 0x04. A common
+         * command is a request only when the catalog says so; class, length
+         * and the transaction-sequence flag come from that same entry.
+         * Events and 0x0F are not requests. Board commands come from the
+         * caller's table. */
         common = NULL;
         board = NULL;
+        flags = 0u;
+        req_len = 0u;
+        answer_max = 0u;
         if (frame.cmd >= ECSP_CMD_COMMON_MIN &&
-            frame.cmd <= ECSP_CMD_COMMON_MAX) {
-            common = find_common_cmd(frame.cmd);
+            frame.cmd <= ECSP_CMD_COMMON_MAX &&
+            ecsp_catalog_request(frame.cmd, &flags, &req_len, &answer_max)) {
+            common = find_common_handler(frame.cmd);
         } else if (frame.cmd >= ECSP_CMD_BOARD_MIN &&
                    frame.cmd <= ECSP_CMD_BOARD_MAX) {
             board = find_board_cmd(s, frame.cmd);
@@ -564,7 +552,11 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
         }
 
         /* Step 5: payload length. */
-        req_len = (common != NULL) ? common->req_len : board->req_len;
+        if (board != NULL) {
+            req_len = board->req_len;
+            flags = board->flags;
+            answer_max = board->resp_max;
+        }
         if (req_len != ECSP_CMD_LEN_ANY && frame.payload_len != req_len) {
             if (!answer_rs(s, frame.cmd, ECSP_RS_BAD_LEN, now_ms)) {
                 break;
@@ -579,7 +571,6 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
          * answer frame byte for byte and never re-enters the handler, so a
          * physical action cannot happen twice (ADR-0004). The session gate is
          * earlier, so a cached entry can never resurrect a dead session. */
-        flags = (common != NULL) ? common->flags : board->flags;
         has_seq = ((flags & (uint8_t)ECSP_CMD_TXN_SEQ) != 0u &&
                    frame.payload_len >= ECSP_TXN_SEQ_LEN) ? 1 : 0;
         seq = (has_seq != 0) ? frame.payload[0] : 0u;
@@ -654,9 +645,7 @@ void ecsp_slave_step(ecsp_slave_t *s, uint32_t now_ms)
             /* Reserve room for this command's largest possible answer before
              * running the handler, so a full FIFO cannot cause a side effect
              * to be executed twice. */
-            max_data = (common != NULL)
-                           ? (size_t)common->resp_max
-                           : (size_t)board->resp_max;
+            max_data = (size_t)answer_max;
             if (s->cfg.tx_cap - s->tx_len <
                 ECSP_FRAME_MIN_LEN + 1u + max_data) {
                 break;

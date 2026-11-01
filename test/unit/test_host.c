@@ -34,6 +34,12 @@
 #define QUERY_MS     50u
 #define ACTION_MS    100u
 #define IDENTITY_MS  3000u /* spec 7.1: 0x03 / 0x05 first answer */
+#define UPGRADE_MS   500u  /* spec 7.1: 0x0C first answer */
+#define SELFTEST_EXEC_MS 2000u
+/* Short enough that three heartbeat periods do not drop the session
+ * before the host asks for the result. The command code, not this
+ * width, is what the test pins down. */
+#define UPGRADE_EXEC_MS  200u
 #define DROPOUT_MS   3000u
 #define SETUP_MS     5000u
 
@@ -153,6 +159,63 @@ static const uint8_t sn_set_req[] = {
     0xFA, 0x15, 0x00, 0x03, 0x05, 0x02,
     0x53, 0x4E, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
     0xB3, 0x49, 0x0D
+};
+
+/* spec 5.2.7: 0x00 ends the reset. CRC16-MODBUS over 0A 00 03 07 02 00
+ * is 0x54B0. */
+static const uint8_t reset_ok[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x07, 0x02, 0x00, 0xB0, 0x54, 0x0D
+};
+
+/* spec 5.2.8 start, seq 0x01 control 0x00. CRC over 0B 00 03 08 02 01 00
+ * is 0xF047. Accept carries T_exec_max 2000 (D0 07); CRC over
+ * 0C 00 03 08 02 00 D0 07 is 0x16BC. */
+static const uint8_t selftest_start[2] = { 0x01u, 0x00u };
+static const uint8_t selftest_req[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x08, 0x02, 0x01, 0x00, 0x47, 0xF0, 0x0D
+};
+static const uint8_t selftest_accept[] = {
+    0xFA, 0x0C, 0x00, 0x03, 0x08, 0x02, 0x00, 0xD0, 0x07, 0xBC, 0x16, 0x0D
+};
+/* spec 5.2.10 result 0x00. */
+static const uint8_t selftest_event[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x0A, 0x02, 0x00, 0x21, 0x97, 0x0D
+};
+/* spec 5.2.9 empty get-result, and the 0x00 answer with result 0x00.
+ * CRC over 09 00 03 09 02 is 0x908F. CRC over 0B 00 03 09 02 00 00 is 0x9C47. */
+static const uint8_t get_selftest_req[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x09, 0x02, 0x8F, 0x90, 0x0D
+};
+static const uint8_t get_selftest_ok[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x09, 0x02, 0x00, 0x00, 0x47, 0x9C, 0x0D
+};
+
+/* spec 5.2.12 start. CRC over 0B 00 03 0C 02 01 00 is 0xC046.
+ * Accept carries T_exec_max 60000 (60 EA); CRC over
+ * 0C 00 03 0C 02 00 60 EA is 0x5BF8. */
+static const uint8_t upgrade_start[2] = { 0x01u, 0x00u };
+static const uint8_t upgrade_req[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x0C, 0x02, 0x01, 0x00, 0x46, 0xC0, 0x0D
+};
+static const uint8_t upgrade_accept[] = {
+    0xFA, 0x0C, 0x00, 0x03, 0x0C, 0x02, 0x00, 0x60, 0xEA, 0xF8, 0x5B, 0x0D
+};
+/* Same accept with T_exec_max 200 (C8 00). CRC over 0C 00 03 0C 02 00 C8 00
+ * is 0x1406. */
+static const uint8_t upgrade_accept_short[] = {
+    0xFA, 0x0C, 0x00, 0x03, 0x0C, 0x02, 0x00, 0xC8, 0x00, 0x06, 0x14, 0x0D
+};
+/* spec 5.2.14 result 0x00. */
+static const uint8_t upgrade_event[] = {
+    0xFA, 0x0A, 0x00, 0x03, 0x0E, 0x02, 0x00, 0x60, 0x56, 0x0D
+};
+/* spec 5.2.13. CRC over 09 00 03 0D 02 is 0x508D.
+ * CRC over 0B 00 03 0D 02 00 00 is 0xAC46. */
+static const uint8_t get_upgrade_req[] = {
+    0xFA, 0x09, 0x00, 0x03, 0x0D, 0x02, 0x8D, 0x50, 0x0D
+};
+static const uint8_t get_upgrade_ok[] = {
+    0xFA, 0x0B, 0x00, 0x03, 0x0D, 0x02, 0x00, 0x00, 0x46, 0xAC, 0x0D
 };
 
 /* spec 5.2.11 set low-power mode, enter (0x01). */
@@ -1217,6 +1280,236 @@ static void test_low_power_still_retries_at_100ms(void)
     CHECK_EQ(0, g_txn_calls);
 }
 
+/* An action answer inside the 100 ms ceiling ends the transaction.
+ * The host does not also retry at the ceiling. */
+static void test_reset_answer_before_100ms_ends_immediately(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_SYSTEM_RESET,
+                                      reset_seq, 1u, on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(reset_req, sizeof reset_req);
+
+    ecsp_host_rx(&g_host, reset_ok, sizeof reset_ok);
+    step_at(20u + 10u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_SYSTEM_RESET, g_txn_cmd);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* spec 7.1: accepting a self-test waits 100 ms, not the upgrade window
+ * and not the 50 ms query ceiling. */
+static void test_selftest_accept_retries_at_100ms(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_CONTROL_SELFTEST,
+                                      selftest_start, sizeof selftest_start,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(selftest_req, sizeof selftest_req);
+
+    step_at(20u + QUERY_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + ACTION_MS - 1u);
+    expect_nothing();
+
+    step_at(20u + ACTION_MS);
+    expect_bytes(selftest_req, sizeof selftest_req);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* The accept ends the silence wait at once. The result event for 0x08 is
+ * 0x0A; 0x0E does not close this transaction. */
+static void test_selftest_result_event_is_0x0A(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_CONTROL_SELFTEST,
+                                      selftest_start, sizeof selftest_start,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(selftest_req, sizeof selftest_req);
+
+    ecsp_host_rx(&g_host, selftest_accept, sizeof selftest_accept);
+    step_at(20u + 10u);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, upgrade_event, sizeof upgrade_event);
+    step_at(20u + ACTION_MS + 1u);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, selftest_event, sizeof selftest_event);
+    step_at(20u + ACTION_MS + 2u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, g_txn_cmd);
+    CHECK_EQ(0x00, g_txn_rs);
+    CHECK_EQ(1u, g_txn_len);
+    CHECK_EQ(0x00, g_txn_byte);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+}
+
+/* A lost 0x0A is recovered with 0x09, after T_exec_max. That query then
+ * uses the 50 ms ceiling. */
+static void test_selftest_get_result_is_0x09(void)
+{
+    uint32_t accepted = 30u;
+
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_CONTROL_SELFTEST,
+                                      selftest_start, sizeof selftest_start,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(selftest_req, sizeof selftest_req);
+
+    ecsp_host_rx(&g_host, selftest_accept, sizeof selftest_accept);
+    step_at(accepted);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(accepted + SELFTEST_EXEC_MS - 1u);
+    expect_nothing();
+    CHECK_EQ(0, g_txn_calls);
+
+    step_at(accepted + SELFTEST_EXEC_MS);
+    expect_bytes(get_selftest_req, sizeof get_selftest_req);
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(accepted + SELFTEST_EXEC_MS + QUERY_MS - 1u);
+    expect_nothing();
+
+    step_at(accepted + SELFTEST_EXEC_MS + QUERY_MS);
+    expect_bytes(get_selftest_req, sizeof get_selftest_req);
+
+    ecsp_host_rx(&g_host, get_selftest_ok, sizeof get_selftest_ok);
+    step_at(accepted + SELFTEST_EXEC_MS + QUERY_MS + 1u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, g_txn_cmd);
+    CHECK_EQ(1u, g_txn_len);
+    CHECK_EQ(0x00, g_txn_byte);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+}
+
+/* spec 7.1: the upgrade accept stays at 500 ms. 100 ms of silence is
+ * not a retry. */
+static void test_upgrade_accept_retries_at_500ms(void)
+{
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_START_UPGRADE,
+                                      upgrade_start, sizeof upgrade_start,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(upgrade_req, sizeof upgrade_req);
+
+    step_at(20u + ACTION_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESP, ecsp_host_txn(&g_host, 0x02u));
+
+    step_at(20u + UPGRADE_MS - 1u);
+    expect_nothing();
+
+    step_at(20u + UPGRADE_MS);
+    expect_bytes(upgrade_req, sizeof upgrade_req);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_SESS_NORMAL, ecsp_host_session(&g_host, 0x02u));
+}
+
+/* 0x0C's result event is 0x0E. A lost event is recovered with 0x0D, not
+ * the self-test query. An early accept still ends the 500 ms wait. */
+static void test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D(void)
+{
+    uint32_t accepted = 40u;
+
+    g_txn_calls = 0;
+    reach_normal();
+
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_START_UPGRADE,
+                                      upgrade_start, sizeof upgrade_start,
+                                      on_txn, &g_txn_marker));
+    step_at(20u);
+    expect_bytes(upgrade_req, sizeof upgrade_req);
+
+    ecsp_host_rx(&g_host, upgrade_accept, sizeof upgrade_accept);
+    step_at(accepted);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(20u + UPGRADE_MS);
+    expect_nothing();
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, selftest_event, sizeof selftest_event);
+    step_at(accepted + 1u);
+    CHECK_EQ(0, g_txn_calls);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+
+    ecsp_host_rx(&g_host, upgrade_event, sizeof upgrade_event);
+    step_at(accepted + 2u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_OK, g_txn_status);
+    CHECK_EQ(ECSP_CMD_START_UPGRADE, g_txn_cmd);
+    CHECK_EQ(1u, g_txn_len);
+    CHECK_EQ(0x00, g_txn_byte);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    g_txn_calls = 0;
+    CHECK_EQ(ECSP_OK, ecsp_host_submit(&g_host, 0x02u, ECSP_CMD_START_UPGRADE,
+                                      upgrade_start, sizeof upgrade_start,
+                                      on_txn, &g_txn_marker));
+    step_at(accepted + 3u);
+    expect_bytes(upgrade_req, sizeof upgrade_req);
+    ecsp_host_rx(&g_host, upgrade_accept_short, sizeof upgrade_accept_short);
+    step_at(accepted + 4u);
+    CHECK_EQ(ECSP_TXN_WAIT_RESULT, ecsp_host_txn(&g_host, 0x02u));
+    expect_nothing();
+
+    step_at(accepted + 4u + UPGRADE_EXEC_MS - 1u);
+    expect_nothing();
+
+    step_at(accepted + 4u + UPGRADE_EXEC_MS);
+    expect_bytes(get_upgrade_req, sizeof get_upgrade_req);
+
+    ecsp_host_rx(&g_host, get_upgrade_ok, sizeof get_upgrade_ok);
+    step_at(accepted + 4u + UPGRADE_EXEC_MS + 1u);
+    CHECK_EQ(1, g_txn_calls);
+    CHECK_EQ(ECSP_CMD_START_UPGRADE, g_txn_cmd);
+    CHECK_EQ(1u, g_txn_len);
+    CHECK_EQ(0x00, g_txn_byte);
+    CHECK_EQ(ECSP_TXN_IDLE, ecsp_host_txn(&g_host, 0x02u));
+}
+
 /* spec 7.1: setting the serial number waits the same 3 s, not 100 ms. */
 static void test_serial_write_waits_3s_not_100ms(void)
 {
@@ -1266,6 +1559,12 @@ int main(void)
     test_identity_silence_times_out_after_three_waits();
     test_identity_reject_is_not_retried();
     test_low_power_still_retries_at_100ms();
+    test_reset_answer_before_100ms_ends_immediately();
+    test_selftest_accept_retries_at_100ms();
+    test_selftest_result_event_is_0x0A();
+    test_selftest_get_result_is_0x09();
+    test_upgrade_accept_retries_at_500ms();
+    test_upgrade_result_event_is_0x0E_and_get_result_is_0x0D();
     test_serial_write_waits_3s_not_100ms();
     return ecsp_test_report();
 }

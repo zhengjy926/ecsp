@@ -317,24 +317,14 @@ static int is_identity_write(uint8_t cmd)
 
 static uint32_t response_limit(uint8_t cmd)
 {
-    if (cmd == (uint8_t)ECSP_CMD_HANDSHAKE) {
-        return ECSP_RESP_HANDSHAKE_MS;
+    uint32_t ms = 0u;
+
+    /* The catalog stores the millisecond. Command class is not an input. */
+    if (ecsp_catalog_resp_ms(cmd, &ms) != 0) {
+        return ms;
     }
-    if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
-        return ECSP_RESP_UPGRADE_MS;
-    }
-    if (is_identity_write(cmd)) {
-        return ECSP_RESP_IDENTITY_MS;
-    }
-    /* Getters (spec 7.1). Everything else shares the 100 ms ceiling. */
-    if (cmd == (uint8_t)ECSP_CMD_GET_VERSION ||
-        cmd == (uint8_t)ECSP_CMD_GET_HW_VERSION ||
-        cmd == (uint8_t)ECSP_CMD_GET_SERIAL ||
-        cmd == (uint8_t)ECSP_CMD_GET_SELFTEST ||
-        cmd == (uint8_t)ECSP_CMD_GET_UPGRADE ||
-        cmd == (uint8_t)ECSP_CMD_GET_FAULT) {
-        return ECSP_RESP_QUERY_MS;
-    }
+    /* A board command is not in the catalog. It keeps the ceiling unlisted
+     * commands already waited. */
     return ECSP_RESP_ACTION_MS;
 }
 
@@ -350,7 +340,9 @@ static void progress_bringup(ecsp_host_t *h, ecsp_host_slot_t *slot,
     uint8_t cmd;
 
     if (waiting_hs || waiting_ver) {
-        uint32_t limit = waiting_hs ? ECSP_RESP_HANDSHAKE_MS : ECSP_RESP_QUERY_MS;
+        uint8_t waited = waiting_hs ? (uint8_t)ECSP_CMD_HANDSHAKE
+                                    : (uint8_t)ECSP_CMD_GET_VERSION;
+        uint32_t limit = response_limit(waited);
 
         if (!deadline_reached(slot->sent_ms, now_ms, limit)) {
             return;
@@ -534,21 +526,7 @@ static void arm_probe(ecsp_host_slot_t *slot)
 
 /* 0x08 and 0x0C share one shape (spec 4.3, 5.2.8, 5.2.12): an accept carries
  * T_exec_max, the result is a one-byte event, and a lost event is recovered
- * by the paired get-result query. */
-static int long_run_pair(uint8_t cmd, uint8_t *event_cmd, uint8_t *query_cmd)
-{
-    if (cmd == (uint8_t)ECSP_CMD_CONTROL_SELFTEST) {
-        *event_cmd = (uint8_t)ECSP_CMD_SELFTEST_REPORT;
-        *query_cmd = (uint8_t)ECSP_CMD_GET_SELFTEST;
-        return 1;
-    }
-    if (cmd == (uint8_t)ECSP_CMD_START_UPGRADE) {
-        *event_cmd = (uint8_t)ECSP_CMD_UPGRADE_REPORT;
-        *query_cmd = (uint8_t)ECSP_CMD_GET_UPGRADE;
-        return 1;
-    }
-    return 0;
-}
+ * by the paired get-result query. Both codes come from the catalog. */
 
 static int awaiting_result(const ecsp_host_slot_t *slot)
 {
@@ -603,7 +581,7 @@ static void progress_result(ecsp_host_t *h, ecsp_host_slot_t *slot,
     if (slot->txn_state != (uint8_t)ECSP_TXN_WAIT_RESULT) {
         return;
     }
-    if (!long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd)) {
+    if (ecsp_catalog_long_run(slot->txn_cmd, &event_cmd, &query_cmd) == 0) {
         return;
     }
     if (!deadline_reached(slot->txn_result_ms, now_ms, slot->txn_exec_max)) {
@@ -705,7 +683,7 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
         uint8_t event_cmd = 0u;
         uint8_t query_cmd = 0u;
 
-        if (long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd) &&
+        if (ecsp_catalog_long_run(slot->txn_cmd, &event_cmd, &query_cmd) != 0 &&
             frame->cmd == event_cmd &&
             frame->payload_len == 1u) {
             finish_long_result(h, slot, frame->payload[0]);
@@ -766,7 +744,7 @@ static void accept_frame(ecsp_host_t *h, const ecsp_frame_t *frame,
             return;
         }
 
-        paired = long_run_pair(slot->txn_cmd, &event_cmd, &query_cmd);
+        paired = ecsp_catalog_long_run(slot->txn_cmd, &event_cmd, &query_cmd);
 
         /* spec 4.3: 0x00 plus T_exec_max accepts the command and waits.
          * Any other answer is the end — there will be no result event. */

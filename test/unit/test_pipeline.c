@@ -285,6 +285,18 @@ static void test_unknown_command_after_handshake(void)
     expect_answer(0x7Fu, ECSP_RS_UNSUPPORTED, NULL, 0u);
 }
 
+/* 0x0F is not a request yet. A host frame that uses it is still undefined. */
+static void test_upload_control_is_still_undefined(void)
+{
+    static const uint8_t off[1] = { 0x00u };
+
+    init_slave();
+    handshake();
+
+    send(ECSP_CMD_CONTROL_UPLOAD, off, sizeof off);
+    expect_answer(ECSP_CMD_CONTROL_UPLOAD, ECSP_RS_UNSUPPORTED, NULL, 0u);
+}
+
 static void test_command_gate_precedes_length_gate(void)
 {
     /* An unknown command carrying a payload is 0x04, not 0x02. */
@@ -423,6 +435,28 @@ static void start_selftest(void)
     expect_answer(ECSP_CMD_CONTROL_SELFTEST, ECSP_RS_OK, tmax, sizeof tmax);
 }
 
+/* Event codes are not requests. 0x0A stays 0x04, including while a
+ * long-running self-test is in flight. A query issued in that same window
+ * is still answered. */
+static void test_result_event_code_is_not_a_request(void)
+{
+    static const uint8_t result[1] = { 0x00u };
+    static const uint8_t version[7] = {
+        '1', '.', '0', '.', '0', '.', '0'
+    };
+
+    init_slave();
+    handshake();
+    start_selftest();
+
+    send(ECSP_CMD_GET_VERSION, NULL, 0u);
+    expect_answer(ECSP_CMD_GET_VERSION, ECSP_RS_OK, version, sizeof version);
+
+    send(ECSP_CMD_SELFTEST_REPORT, result, sizeof result);
+    expect_answer(ECSP_CMD_SELFTEST_REPORT, ECSP_RS_UNSUPPORTED, NULL, 0u);
+    CHECK_EQ(ECSP_CMD_CONTROL_SELFTEST, ecsp_slave_long_run_cmd(&g_slave));
+}
+
 static void test_length_gate_precedes_busy_gate(void)
 {
     /* ADR-0002 step 5 before step 7: a short 0x08 while busy is 0x02, not 0x11. */
@@ -500,6 +534,8 @@ int main(void)
     test_session_gate_precedes_length_gate();
     test_command_gate_precedes_session_gate();
     test_unknown_command_after_handshake();
+    test_upload_control_is_still_undefined();
+    test_result_event_code_is_not_a_request();
     test_command_gate_precedes_length_gate();
     test_length_gate_precedes_parameter_gate();
     test_parameter_gate_after_length_gate();
