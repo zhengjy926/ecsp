@@ -3,7 +3,7 @@
   从 ECSP 通用规范生成一份自包含的板卡规范骨架。
 
 .DESCRIPTION
-  复制 docs/specs/ecsp-spec.md，替换标题、前言、1.1/1.2 口径、5.3 与附录 C 标题，删除附录 E，
+  复制 docs/specs/ecsp-spec.md，替换标题与 1.1/1.2 口径，在标题后插入前言，替换 5.3 与附录 C 标题，删除附录 E，
   按本板地址改写示例帧中的 P/B，最后打印待填写清单。
   生成结果自包含：通用层正文完整保留，只有扩展点需要人填。
   每个必改锚点找不到就失败。-CheckAnchors 只做这件事，并确认改掉 1.1 的一个词会被拒绝。
@@ -80,9 +80,9 @@ function Get-RequiredAnchors {
 '@
     return @(
         @{ Label = '标题'; Old = '# 设备组自定义串行通信协议（ECSP）通用规范' }
-        @{ Label = '1.1'; Old = '本文件定义设备组自定义串行通信协议（Equipment Custom Serial Protocol, ECSP）的通用部分，作为设备组内各板卡软件设计、编码、单元测试与系统联调的共同依据，并为软件 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师、协议维护与评审人员。' }
-        @{ Label = '1.2'; Old = '本规范适用于设备组内各产品中，节点之间以及节点与外部系统之间采用 ECSP 的串行通信链路。采用其他协议或接口形式的通信（如 USB、网络等）不在本规范范围内，由相应接口协议规范定义。' }
-        @{ Label = '1.2 范围列表'; Old = '本规范只规定通用层。下列内容不在本规范范围内，由对应实例化文档定义：' }
+        @{ Label = '1.1'; Old = '本文件定义设备组自定义串行通信协议（Equipment Custom Serial Protocol, ECSP）的通用层：帧格式、寻址模型、通信机制、通用命令集、应答码与通用时序，作为各板卡软件设计、编码、测试与联调的共同依据，并为软件 SRS 接口需求提供实现层细节。产品/板卡级内容在预留扩展点内由对应规范定义，见附录 C。预期读者：嵌入式/上位机软件工程师、测试工程师、协议维护与评审人员。' }
+        @{ Label = '1.2'; Old = '适用于设备组内采用 ECSP 的串行链路；USB、网络等其它接口不在范围内。' }
+        @{ Label = '1.2 范围列表'; Old = '本规范只规定通用层，下列内容由实例化文档定义：' }
         @{ Label = '1.3 ECSP'; Old = '* **ECSP**：Equipment Custom Serial Protocol，即设备组自定义串行通用协议。' }
         @{ Label = '1.4 参考文档'; Old = '| 医疗器械软件注册审查指导原则 | 2022年修订版 |' }
         @{ Label = '2.2'; Old = $phys.Replace("`r`n", "`n").TrimEnd() }
@@ -160,7 +160,7 @@ function Anchor([string]$Label) {
 # 1) 标题
 $text = Replace-Exact $text (Anchor '标题') "# $Name ECSP 接口协议规范" '标题'
 
-# 2) 前言
+# 2) 前言：通用规范无此节，插在标题与第 1 章之间
 $preface = @"
 ## 前言
 
@@ -172,7 +172,11 @@ $preface = @"
 
 "@
 $preface = $preface.TrimEnd() + "`n`n"
-$text = Replace-Section -Doc $text -Start '## 前言' -End '# 1 引言' -Body $preface
+$intro = '# 1 引言'
+if ($text.IndexOf($intro) -lt 0) {
+    throw '锚点未找到（# 1 引言）。通用规范已变更，请先更新 tools/new-board-spec.ps1。'
+}
+$text = $text.Replace($intro, $preface + $intro)
 
 # 2.1) 1.1 目的与 1.2 适用范围改为本板口径
 $text = Replace-Exact $text (Anchor '1.1') "本文件定义${Name}与主机之间的 ECSP 接口协议（通用层 + 本板功能命令 + 本板业务约束），作为双方软件设计、编码、单元测试与系统联调的共同依据，并为产品 SRS 中的接口需求提供实现层细节。预期读者包括：嵌入式软件工程师、上位机软件工程师、测试工程师。" '1.1'

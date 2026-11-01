@@ -10,6 +10,9 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Emit compile_commands.json for clangd (F12 / IntelliSense).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Every target compiles warning-free (parent ticket #1, "编译零警告").
 function(ecsp_enable_warnings target)
   if(MSVC)

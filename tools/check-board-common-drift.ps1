@@ -3,7 +3,7 @@
   Fail when a board spec invents hardware detail inside a common-command section.
 
 .DESCRIPTION
-  For each docs/specs/boards/*-spec.md, walk ### 5.2.1 .. ### 5.2.18. Any
+  For each docs/specs/boards/*-spec.md, walk 5.2.1 .. 5.2.18. Any
   hardware token (Sleep, Stop, USARTn, PAx, …) that appears in the board
   section but not in the matching section of docs/specs/ecsp-spec.md is drift:
   link semantics stay in the common spec; board files only override what the
@@ -39,13 +39,20 @@ $tokenPatterns = @(
     '\bSYSCLK\b'
 )
 
+function Find-Heading {
+    param([string]$Doc, [string]$Title)
+    $m = [regex]::Match($Doc, '(?m)^#{1,6} ' + [regex]::Escape($Title))
+    if (-not $m.Success) { return $null }
+    return $m.Value
+}
+
 function Get-SectionBody {
     param([string]$Doc, [string]$Heading)
     $i = $Doc.IndexOf($Heading)
     if ($i -lt 0) { return $null }
     $start = $i + $Heading.Length
     $rest = $Doc.Substring($start)
-    $m = [regex]::Match($rest, '(?m)^#{2,3} ')
+    $m = [regex]::Match($rest, '(?m)^#{1,6} ')
     if ($m.Success) {
         return $rest.Substring(0, $m.Index)
     }
@@ -73,12 +80,15 @@ if (Test-Path -LiteralPath $boardsDir) {
 foreach ($board in $boardFiles) {
     $boardText = (Get-Content -LiteralPath $board.FullName -Raw -Encoding UTF8) -replace "`r`n", "`n"
     for ($n = 1; $n -le 18; $n++) {
-        $heading = "### 5.2.$n "
-        $commonBody = Get-SectionBody $commonText $heading
+        $title = "5.2.$n "
+        $heading = Find-Heading $boardText $title
+        if ($null -eq $heading) { continue }
+        $commonHeading = Find-Heading $commonText $title
         $boardBody = Get-SectionBody $boardText $heading
-        if ($null -eq $boardBody) { continue }
+        $commonBody = $null
+        if ($null -ne $commonHeading) { $commonBody = Get-SectionBody $commonText $commonHeading }
         if ($null -eq $commonBody) {
-            Write-Host ("FAIL {0}: has {1} but common spec does not" -f $board.Name, $heading.Trim())
+            Write-Host ("FAIL {0}: has {1} but common spec does not" -f $board.Name, $title.Trim())
             $failed = 1
             continue
         }
@@ -96,7 +106,7 @@ foreach ($board in $boardFiles) {
         $extra = @($extra | Select-Object -Unique)
         if ($extra.Count -gt 0) {
             Write-Host ("FAIL {0} {1}: hardware tokens not in common section: {2}" -f `
-                $board.Name, $heading.Trim(), ($extra -join ', '))
+                $board.Name, $title.Trim(), ($extra -join ', '))
             $failed = 1
         }
     }
@@ -111,12 +121,18 @@ if ($failed -ne 0) {
 $boardProbe = Get-ChildItem -LiteralPath $boardsDir -Filter '*-spec.md' -File | Select-Object -First 1
 if ($null -ne $boardProbe) {
     $orig = (Get-Content -LiteralPath $boardProbe.FullName -Raw -Encoding UTF8) -replace "`r`n", "`n"
-    $heading = '### 5.2.11 '
-    $body = Get-SectionBody $orig $heading
+    $heading = Find-Heading $orig '5.2.11 '
+    $body = $null
+    if ($null -ne $heading) { $body = Get-SectionBody $orig $heading }
     if ($null -ne $body -and $body.IndexOf('Sleep') -lt 0) {
         $injected = $orig.Insert($orig.IndexOf($heading) + $heading.Length, "`nSleep probe`n")
         $probeHits = @(Get-TokenHits (Get-SectionBody $injected $heading))
-        $commonHits = @(Get-TokenHits (Get-SectionBody $commonText $heading))
+        $commonHeading = Find-Heading $commonText '5.2.11 '
+        if ($null -eq $commonHeading) {
+            Write-Host 'FAIL board-spec drift self-test: common spec has no 5.2.11'
+            exit 1
+        }
+        $commonHits = @(Get-TokenHits (Get-SectionBody $commonText $commonHeading))
         $commonSet = @{}
         foreach ($h in $commonHits) { $commonSet[$h.ToLowerInvariant()] = $true }
         $wouldFail = $false

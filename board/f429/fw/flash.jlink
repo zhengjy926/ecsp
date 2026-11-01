@@ -1,0 +1,8 @@
+device STM32F429IG
+si SWD
+speed 4000
+connect
+loadfile F:\repository\ecsp\board\f429\fw\build\f429_slave.bin 0x08000000
+r
+g
+exit

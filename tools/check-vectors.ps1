@@ -296,7 +296,27 @@ function Get-SpecSections {
         if ($line -match '命令类别[：:]\s*(.+)$') {
             $current.Category = $Matches[1].Trim()
         }
+        elseif ($line -match '^\|\s*((?:特殊会话|获取|设置|动作|事件)类[^\|]*)\s*\|') {
+            # Dense §5.2 meta table: first cell is the command category.
+            if (-not $current.Category) {
+                $current.Category = $Matches[1].Trim()
+            }
+        }
         $current.Lines.Add($line)
+    }
+    # §5.2 不再重复类别；从总表 5-1 按命令码回填，供时序继承检查使用。
+    $catByCmd = @{}
+    foreach ($sec in $sections) {
+        foreach ($line in $sec.Lines) {
+            if ($line -match '^\|\s*0x([0-9A-Fa-f]{2})\s*\|[^|]*\|[^|]*\|\s*((?:特殊会话|获取|设置|动作|事件)类[^|]*)\s*\|') {
+                $catByCmd[$Matches[1].ToLower()] = $Matches[2].Trim()
+            }
+        }
+    }
+    foreach ($sec in $sections) {
+        if (-not $sec.Category -and $sec.Cmd -and $catByCmd.ContainsKey($sec.Cmd)) {
+            $sec.Category = $catByCmd[$sec.Cmd]
+        }
     }
     return $sections
 }
