@@ -46,14 +46,16 @@ static uint8_t bit_not(uint8_t bits)
     return (uint8_t)(0xFFu ^ bits);
 }
 
-/* Latch bit0 when it rises, and remember the whole word for one 0x11 report
- * (spec 5.2.17: a bit that is already 1 is not reported again). */
-static void raise_fault_bit0(ecsp_slave_t *s)
+/* Write `mask` from `value`. A bit that rises arms one 0x11 of the whole
+ * word (spec 5.2.17: a bit that is already 1 is not reported again). A
+ * clear does not. Upload mode off still stores the word and does not arm
+ * the report. */
+static void apply_fault_bits(ecsp_slave_t *s, uint8_t mask, uint8_t value)
 {
-    uint8_t bits = ECSP_FAULT_SELFTEST;
-    uint8_t raised = (uint8_t)(bits & bit_not(s->fault_word));
+    uint8_t next = (uint8_t)((s->fault_word & bit_not(mask)) | (value & mask));
+    uint8_t raised = (uint8_t)(next & bit_not(s->fault_word));
 
-    s->fault_word = (uint8_t)(s->fault_word | bits);
+    s->fault_word = next;
     if (raised != 0u &&
         (s->upload_on != 0u ||
          ecsp_catalog_upload_gated(ECSP_CMD_FAULT_REPORT) == 0)) {
@@ -62,9 +64,14 @@ static void raise_fault_bit0(ecsp_slave_t *s)
     }
 }
 
+static void raise_fault_bit0(ecsp_slave_t *s)
+{
+    apply_fault_bits(s, ECSP_FAULT_SELFTEST, ECSP_FAULT_SELFTEST);
+}
+
 static void clear_selftest_fault(ecsp_slave_t *s)
 {
-    s->fault_word = (uint8_t)(s->fault_word & bit_not(ECSP_FAULT_SELFTEST));
+    apply_fault_bits(s, ECSP_FAULT_SELFTEST, 0u);
 }
 
 static void apply_selftest_fault(ecsp_slave_t *s, uint8_t cmd, uint8_t result)
@@ -264,6 +271,16 @@ int ecsp_long_run_preempt_for_reset(ecsp_slave_t *s)
     }
     drop_running(s);
     return (int)ECSP_RS_OK;
+}
+
+int ecsp_slave_set_fault_bits(ecsp_slave_t *s, uint8_t mask, uint8_t value)
+{
+    if ((s == NULL) || (mask == 0u) ||
+        ((mask & ECSP_FAULT_SELFTEST) != 0u)) {
+        return ECSP_E_ARG;
+    }
+    apply_fault_bits(s, mask, value);
+    return ECSP_OK;
 }
 
 int ecsp_slave_long_run_complete(ecsp_slave_t *s, uint8_t result)

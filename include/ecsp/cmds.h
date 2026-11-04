@@ -172,11 +172,12 @@ uint16_t ecsp_catalog_max_resp_data(void);
 #define ECSP_CTRL_STOP  0x01u
 #define ECSP_CTRL_LEN   1u
 
-/* Fault-word bit0 (spec table 5-3). The common layer has no other bit:
- * a failed self-test sets it, a successful self-test clears it, and an
- * in-flight long-running command that cannot be brought to a safe state
- * sets it too (spec 4.4). bit5..bit7 stay untouched. */
-#define ECSP_FAULT_SELFTEST 0x01u
+/* Fault word (spec table 5-3). bit0 is fixed as self-test failure: a
+ * failed self-test sets it, a successful self-test clears it, and a
+ * long-running command that cannot be brought to a safe state sets it
+ * too (spec 4.4). bit1..bit7 belong to the board spec. */
+#define ECSP_FAULT_SELFTEST   0x01u
+#define ECSP_FAULT_BOARD_MASK 0xFEu
 
 /* Low-power mode values (spec 5.2.11). */
 #define ECSP_LOW_POWER_EXIT  0x00u

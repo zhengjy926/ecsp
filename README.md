@@ -285,7 +285,14 @@ static void run_long_command_if_any(void)
 
 **上传模式（0x0F）。** 关闭时不发 0x0A、0x0E、0x11。心跳和等待握手期间的 0x01 照常发送。上电值来自配置里的 `upload_mode`；从机再次接受握手请求时回到这个初值，即使因此从关闭变回开启，关闭期间没入队的那三帧也不补发。本命令不写非易失存储，应答时限是 50 ms。
 
-**故障字。** 0x12 读的是上下文里的故障字。上电初值来自 `cfg.fault_word`。运行中通用层只改 bit0（`ECSP_FAULT_SELFTEST`）：自检以非 0x00 且非 0x21 的结果结束时置位，以 0x00 结束时清除；复位无法安全中止时也会置位。bit0 从 0 变 1 且上传模式开启时，库发一帧 0x11。bit1–bit4 属于板卡规范，当前没有单独的写入函数。
+**故障字。** 0x12 读的是上下文里的故障字。上电初值来自 `cfg.fault_word`。bit0（`ECSP_FAULT_SELFTEST`）固定为系统自检失败，只有通用层改它：自检以非 0x00 且非 0x21 的结果结束时置位，以 0x00 结束时清除；复位无法安全中止时也会置位。bit1–bit7 由板卡规范定义，用 `ecsp_slave_set_fault_bits` 写入。掩码用 `ECSP_FAULT_BOARD_MASK` 或其子集；掩码为 0 或含有 bit0 时调用失败，故障字不变。选中的位从 0 变为 1，且上传模式开启时，下一次 `step` 发一帧 0x11，载荷是变化后的整个故障字。只清除不上报。上传模式关闭时字仍更新，0x11 不入队，0x12 仍能读到。
+
+```c
+/* Board bit2 rose. The mask does not include bit0. */
+if (ecsp_slave_set_fault_bits(&g_slave, 0x04u, 0x04u) == ECSP_OK) {
+    ecsp_slave_step(&g_slave, now_ms);
+}
+```
 
 ## 主机
 

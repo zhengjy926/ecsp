@@ -106,7 +106,7 @@ typedef struct {
     uint8_t        board_addr;   /* this node's board address */
     ecsp_version_t version;      /* software full version "X.Y.Z.N" (5.2.2) */
     ecsp_slave_identity_t *identity; /* hardware version + serial storage */
-    uint8_t        fault_word;   /* current fault word reported by 0x12 (5.2.18) */
+    uint8_t        fault_word;   /* initial 0x12 word; bit0 is self-test, bit1..bit7 are the board's */
     uint8_t        upload_mode;  /* power-up 上传模式: ECSP_UPLOAD_OFF or ON */
     ecsp_cmd_table_t cmds;       /* board command table (0x30-0xEF) */
     uint8_t       *rx_buf;       /* receive accumulation buffer */
@@ -200,6 +200,16 @@ void ecsp_slave_set_identity_commit(ecsp_slave_t *s,
 
 /* Command code of the in-flight long-running command, or 0 when idle. */
 uint8_t ecsp_slave_long_run_cmd(const ecsp_slave_t *s);
+
+/* Write board-defined fault bits (spec table 5-3, bit1..bit7). `mask`
+ * selects the bits this call updates; `value` supplies their new level.
+ * Bits outside `mask` stay as they are. A selected bit that rises from 0
+ * to 1 arms one 0x11 of the whole word for the next step (spec 5.2.17).
+ * Clearing a bit does not report. Upload mode off still stores the word
+ * and does not arm 0x11. bit0 is ECSP_FAULT_SELFTEST and is not writable
+ * here. Returns ECSP_OK, or ECSP_E_ARG when s is NULL, mask is 0, or mask
+ * includes bit0. */
+int ecsp_slave_set_fault_bits(ecsp_slave_t *s, uint8_t mask, uint8_t value);
 
 /* The product finished the in-flight command with `result` (spec 4.3).
  * 0x11 is not a completion code. The result event is queued for the next

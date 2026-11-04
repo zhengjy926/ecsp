@@ -466,6 +466,106 @@ static void test_stop_is_accepted_and_result_becomes_aborted(void)
     }
 }
 
+static void expect_fault_report(uint8_t word)
+{
+    uint8_t payload[1];
+    uint8_t frame[ECSP_MAX_FRAME];
+    size_t n;
+
+    payload[0] = word;
+    n = ecsp_frame_encode(frame, sizeof frame, 0x03u, 0x02u,
+                          ECSP_CMD_FAULT_REPORT, payload, 1u);
+    expect_raw(frame, n);
+}
+
+/* spec table 5-3: bit0 stays with the common layer. bit1..bit7 are the
+ * board's, including the bits that used to be reserved. */
+static void test_board_fault_bits_leave_bit0_to_the_common_layer(void)
+{
+    static const uint8_t none[1] = { 0x00u };
+    static const uint8_t bit3[1] = { 0x08u };
+    static const uint8_t bit0_and_bit3[1] = { 0x09u };
+    static const uint8_t bit3_and_bit7[1] = { 0x88u };
+    static const uint8_t failed_result[1] = { ECSP_RS_FAILED };
+    uint8_t upload_off = ECSP_CTRL_UPLOAD_OFF;
+    uint8_t event[ECSP_MAX_FRAME];
+    uint8_t both[2u * ECSP_MAX_FRAME];
+    size_t event_len;
+    size_t n;
+
+    init_slave();
+    CHECK_EQ(ECSP_E_ARG,
+             ecsp_slave_set_fault_bits(NULL, ECSP_FAULT_BOARD_MASK, 0u));
+    handshake();
+
+    CHECK_EQ(ECSP_E_ARG, ecsp_slave_set_fault_bits(&g_slave, 0u, 0u));
+    CHECK_EQ(ECSP_E_ARG,
+             ecsp_slave_set_fault_bits(&g_slave, ECSP_FAULT_SELFTEST,
+                                      ECSP_FAULT_SELFTEST));
+    CHECK_EQ(ECSP_E_ARG,
+             ecsp_slave_set_fault_bits(&g_slave,
+                                      (uint8_t)(ECSP_FAULT_SELFTEST | 0x04u),
+                                      0x05u));
+    step();
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, none, sizeof none);
+
+    /* bit2 and bit3 rise together: one report of the whole word. */
+    CHECK_EQ(ECSP_OK, ecsp_slave_set_fault_bits(&g_slave, 0x0Cu, 0x0Cu));
+    step();
+    expect_fault_report(0x0Cu);
+
+    /* Clearing bit2 does not report. bit7 in the value is outside the mask. */
+    CHECK_EQ(ECSP_OK, ecsp_slave_set_fault_bits(&g_slave, 0x04u, 0x80u));
+    step();
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, bit3, sizeof bit3);
+
+    /* The same bit3 again does not report, and does not set bit7. */
+    CHECK_EQ(ECSP_OK, ecsp_slave_set_fault_bits(&g_slave, 0x08u, 0x88u));
+    step();
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+
+    start_selftest(0x01u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_FAILED));
+    step();
+    event_len = ecsp_frame_encode(event, sizeof event, 0x03u, 0x02u,
+                                  ECSP_CMD_SELFTEST_REPORT, failed_result,
+                                  sizeof failed_result);
+    n = ecsp_frame_encode(both, sizeof both, 0x03u, 0x02u,
+                          ECSP_CMD_FAULT_REPORT, bit0_and_bit3,
+                          sizeof bit0_and_bit3);
+    memcpy(&both[n], event, event_len);
+    n += event_len;
+    expect_raw(both, n);
+
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, bit0_and_bit3,
+                sizeof bit0_and_bit3);
+
+    /* A successful self-test clears bit0 and leaves bit3 set. No 0x11. */
+    start_selftest(0x02u);
+    drain();
+    CHECK_EQ(ECSP_OK, ecsp_slave_long_run_complete(&g_slave, ECSP_RS_OK));
+    step();
+    expect_raw(selftest_report_ok, sizeof selftest_report_ok);
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, bit3, sizeof bit3);
+
+    /* bit7 used to be reserved. Upload off stores it and does not report. */
+    send_cmd(ECSP_CMD_CONTROL_UPLOAD, &upload_off, 1u);
+    expect_resp(ECSP_CMD_CONTROL_UPLOAD, ECSP_RS_OK, NULL, 0u);
+    CHECK_EQ(ECSP_OK, ecsp_slave_set_fault_bits(&g_slave, 0x80u, 0x80u));
+    step();
+    CHECK_EQ(0u, ecsp_slave_tx_pending(&g_slave));
+    send_cmd(ECSP_CMD_GET_FAULT, NULL, 0u);
+    expect_resp(ECSP_CMD_GET_FAULT, ECSP_RS_OK, bit3_and_bit7,
+                sizeof bit3_and_bit7);
+}
+
 static void test_selftest_failure_sets_fault_and_success_clears_it(void)
 {
     static const uint8_t failed_result[1] = { ECSP_RS_FAILED };
@@ -716,6 +816,7 @@ int main(void)
     test_past_exec_max_query_still_running();
     test_busy_rejects_ordinary_commands_without_exec_max();
     test_stop_is_accepted_and_result_becomes_aborted();
+    test_board_fault_bits_leave_bit0_to_the_common_layer();
     test_selftest_failure_sets_fault_and_success_clears_it();
     test_reset_preempts_after_safe_abort();
     test_unsafe_abort_refuses_reset_and_reports_fault();
