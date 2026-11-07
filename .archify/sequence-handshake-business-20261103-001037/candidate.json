@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "握手、版本核对与业务往返",
+    "locale": "zh-CN",
+    "output": ".archify/sequence-handshake-business-20261103-001037/handshake-business.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "external",
+      "label": "主机应用",
+      "sublabel": "submit / step",
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 170,
+          "end_line": 176,
+          "label": "host API"
+        }
+      ]
+    },
+    {
+      "id": "host",
+      "type": "backend",
+      "label": "L4 Host",
+      "sublabel": "link.c",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 823,
+          "end_line": 863,
+          "label": "host_step"
+        }
+      ]
+    },
+    {
+      "id": "wire",
+      "type": "messagebus",
+      "label": "字节链路",
+      "sublabel": "FIFO / USART",
+      "sources": [
+        {
+          "path": "test/integ/two_instance.c",
+          "line": 302,
+          "end_line": 320,
+          "label": "deliver_host"
+        }
+      ]
+    },
+    {
+      "id": "slave",
+      "type": "backend",
+      "label": "L3 Slave",
+      "sublabel": "engine.c",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 506,
+          "end_line": 535,
+          "label": "slave_step"
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 140,
+      "to": 480,
+      "label": "上电建立"
+    },
+    {
+      "from": 490,
+      "to": 630,
+      "label": "业务命令"
+    },
+    {
+      "from": 640,
+      "to": 700,
+      "label": "心跳"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "app",
+      "to": "host",
+      "y": 160,
+      "label": "host_step",
+      "variant": "emphasis",
+      "note": "首次 step 对每槽主动发 0x01"
+    },
+    {
+      "id": "m2",
+      "from": "host",
+      "to": "wire",
+      "y": 210,
+      "label": "0x01 握手请求"
+    },
+    {
+      "id": "m3",
+      "from": "wire",
+      "to": "slave",
+      "y": 238,
+      "label": "slave_rx"
+    },
+    {
+      "id": "m5",
+      "from": "slave",
+      "to": "wire",
+      "y": 320,
+      "label": "0x01 / 0x00"
+    },
+    {
+      "id": "m6",
+      "from": "wire",
+      "to": "host",
+      "y": 348,
+      "label": "host_rx → HANDSHAKEN"
+    },
+    {
+      "id": "m7",
+      "from": "host",
+      "to": "wire",
+      "y": 376,
+      "label": "0x02 取版本",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m8",
+      "from": "wire",
+      "to": "slave",
+      "y": 404,
+      "label": "slave_rx"
+    },
+    {
+      "id": "m9",
+      "from": "slave",
+      "to": "wire",
+      "y": 432,
+      "label": "0x02 + 版本"
+    },
+    {
+      "id": "m10",
+      "from": "wire",
+      "to": "host",
+      "y": 460,
+      "label": "核对 → NORMAL"
+    },
+    {
+      "id": "m11",
+      "from": "app",
+      "to": "host",
+      "y": 500,
+      "label": "submit 业务 cmd",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m12",
+      "from": "host",
+      "to": "wire",
+      "y": 528,
+      "label": "下一拍发出"
+    },
+    {
+      "id": "m13",
+      "from": "wire",
+      "to": "slave",
+      "y": 556,
+      "label": "管线处理"
+    },
+    {
+      "id": "m14",
+      "from": "slave",
+      "to": "wire",
+      "y": 584,
+      "label": "应答帧"
+    },
+    {
+      "id": "m15",
+      "from": "wire",
+      "to": "host",
+      "y": 612,
+      "label": "txn 回调一次",
+      "variant": "return"
+    },
+    {
+      "id": "m16",
+      "from": "slave",
+      "to": "wire",
+      "y": 650,
+      "label": "0x10 心跳",
+      "variant": "dashed"
+    },
+    {
+      "id": "m17",
+      "from": "wire",
+      "to": "host",
+      "y": 678,
+      "label": "刷新 last_rx",
+      "variant": "dashed"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "host",
+      "from": 160,
+      "to": 630,
+      "type": "backend"
+    },
+    {
+      "participant": "slave",
+      "from": 238,
+      "to": 690,
+      "type": "backend"
+    },
+    {
+      "participant": "wire",
+      "from": 210,
+      "to": 690,
+      "type": "messagebus"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "建立顺序",
+      "items": [
+        "0x01 成功后同一拍进入发 0x02",
+        "版本 7 字节原始比较，相符才 NORMAL"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "业务闸门",
+      "items": [
+        "非 NORMAL 的 submit 本地拒绝",
+        "应答到达立即结束事务并回调"
+      ]
+    }
+  ]
+}

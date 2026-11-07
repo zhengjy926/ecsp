@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "tree",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\tree-source-modules-20261103-001037\\candidate.json",
+    "sha256": "ba6d29d962a100ee79594c82a2bac10d66d04386c565cc22fda461f6978d1073",
+    "bytes": 3647
+  },
+  "artifact": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\tree-source-modules-20261103-001037\\source-modules.html",
+    "sha256": "93de2fcc943531f8acd03dc294e0e058daedf1bc70b58dc697d379b7ae9dc423",
+    "bytes": 852420
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\tree-source-modules-20261103-001037\\source-modules.finalize.json",
+    "summaryReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\tree-source-modules-20261103-001037\\source-modules.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\tree-source-modules-20261103-001037\\source-modules.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-02T15:45:55.791Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5100,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

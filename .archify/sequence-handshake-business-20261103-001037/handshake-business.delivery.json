@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "606d0ddd-62f9-475b-b643-3215d51e7a21",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\candidate.json",
+  "output": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\handshake-business.html",
+  "specification": {
+    "sha256": "e019718749e941babfd6ada0081df77d39694e390e11b651cd2cee0ea6996344",
+    "bytes": 5054
+  },
+  "artifact": {
+    "sha256": "764753d3087bd9c7c8f59e7097e01c61eebb7cc9822bd5f2df71a9444128fc20",
+    "bytes": 839802
+  }
+}

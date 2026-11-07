@@ -1,0 +1,37 @@
+[
+  [
+    "architecture",
+    "architecture-ecsp-layers-20261103-001037",
+    "ecsp-layers.html"
+  ],
+  [
+    "lifecycle",
+    "lifecycle-host-session-20261103-001037",
+    "host-session.html"
+  ],
+  [
+    "lifecycle",
+    "lifecycle-host-txn-20261103-001037",
+    "host-txn.html"
+  ],
+  [
+    "sequence",
+    "sequence-handshake-business-20261103-001037",
+    "handshake-business.html"
+  ],
+  [
+    "workflow",
+    "workflow-slave-pipeline-20261103-001037",
+    "slave-pipeline.html"
+  ],
+  [
+    "tree",
+    "tree-source-modules-20261103-001037",
+    "source-modules.html"
+  ],
+  [
+    "class",
+    "class-core-types-20261103-001037",
+    "core-types.html"
+  ]
+]

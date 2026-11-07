@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "9d1590b7-b7cb-4a0b-bc0e-a955f48885ca",
+  "status": "current",
+  "command": "deliver",
+  "type": "lifecycle",
+  "input": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\candidate.json",
+  "output": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\host-txn.html",
+  "specification": {
+    "sha256": "e4f8160a81178bb6194b92e3ce87be227ce89691a1174dfea393f94cd0b7beeb",
+    "bytes": 4490
+  },
+  "artifact": {
+    "sha256": "cce0472199499f8a2c508ed012838b7845d547a0eae8c08c9df04fe59e1fa862",
+    "bytes": 838469
+  }
+}

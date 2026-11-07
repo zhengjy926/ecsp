@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "555d7390-4df5-462d-8681-da6a418e50eb",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\candidate.json",
+  "output": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\ecsp-overview.html",
+  "specification": {
+    "sha256": "6dc62c4225f6cd3317d9d0cee514da97966aa3c0ca93be8cd7bdee8246b858d3",
+    "bytes": 23298
+  },
+  "artifact": {
+    "sha256": "c7f66c160a3be3fa4538325104626d42e76a02604221d8f1aa743f55dbdf19e3",
+    "bytes": 861337
+  }
+}

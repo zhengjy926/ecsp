@@ -1,0 +1,318 @@
+{
+  "schema_version": 1,
+  "diagram_type": "class",
+  "meta": {
+    "title": "ECSP 核心类型",
+    "locale": "zh-CN",
+    "output": ".archify/class-core-types-20261103-001037/core-types.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "layout": {
+    "mode": "grid"
+  },
+  "types": [
+    {
+      "id": "frame",
+      "label": "ecsp_frame_t",
+      "kind": "record",
+      "sublabel": "零拷贝帧视图",
+      "row": 0,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "product_addr",
+          "type": "uint8_t",
+          "visibility": "public"
+        },
+        {
+          "name": "board_addr",
+          "type": "uint8_t",
+          "visibility": "public"
+        },
+        {
+          "name": "cmd",
+          "type": "uint8_t",
+          "visibility": "public"
+        },
+        {
+          "name": "payload",
+          "type": "const uint8_t*",
+          "visibility": "public"
+        },
+        {
+          "name": "payload_len",
+          "type": "uint16_t",
+          "visibility": "public"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/frame.h",
+          "line": 14,
+          "end_line": 20,
+          "label": "frame_t"
+        }
+      ]
+    },
+    {
+      "id": "cmd_table",
+      "label": "ecsp_cmd_table_t",
+      "kind": "record",
+      "sublabel": "板卡命令表",
+      "row": 0,
+      "col": 2,
+      "sources": [
+        {
+          "path": "include/ecsp/cmds.h",
+          "line": 139,
+          "end_line": 147,
+          "label": "cmd_table_t"
+        }
+      ]
+    },
+    {
+      "id": "slave_cfg",
+      "label": "ecsp_slave_cfg_t",
+      "kind": "record",
+      "sublabel": "调用方配置",
+      "row": 1,
+      "col": 0,
+      "attributes": [
+        {
+          "name": "rx_buf/tx_buf",
+          "type": "uint8_t*",
+          "visibility": "public"
+        },
+        {
+          "name": "identity",
+          "type": "ecsp_slave_identity_t*",
+          "visibility": "public"
+        },
+        {
+          "name": "cmds",
+          "type": "ecsp_cmd_table_t",
+          "visibility": "public"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/slave.h",
+          "line": 104,
+          "end_line": 116,
+          "label": "cfg"
+        }
+      ]
+    },
+    {
+      "id": "slave",
+      "label": "ecsp_slave_t",
+      "kind": "class",
+      "sublabel": "L3 上下文",
+      "row": 1,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "ready",
+          "type": "uint8_t",
+          "visibility": "private"
+        },
+        {
+          "name": "txn_cache",
+          "type": "entry[]",
+          "visibility": "private"
+        },
+        {
+          "name": "lr_cmd",
+          "type": "uint8_t",
+          "visibility": "private"
+        }
+      ],
+      "methods": [
+        {
+          "name": "ecsp_slave_init",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_slave_rx",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_slave_step",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_slave_tx_drain",
+          "visibility": "public"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/slave.h",
+          "line": 119,
+          "end_line": 157,
+          "label": "struct"
+        },
+        {
+          "path": "include/ecsp/slave.h",
+          "line": 167,
+          "end_line": 183,
+          "label": "API"
+        }
+      ]
+    },
+    {
+      "id": "host_cfg",
+      "label": "ecsp_host_cfg_t",
+      "kind": "record",
+      "sublabel": "多从机槽",
+      "row": 2,
+      "col": 0,
+      "attributes": [
+        {
+          "name": "slaves",
+          "type": "ecsp_host_slave_cfg_t*",
+          "visibility": "public"
+        },
+        {
+          "name": "board_cmds",
+          "type": "ecsp_cmd_table_t",
+          "visibility": "public"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 111,
+          "end_line": 122,
+          "label": "cfg"
+        }
+      ]
+    },
+    {
+      "id": "host",
+      "label": "ecsp_host_t",
+      "kind": "class",
+      "sublabel": "L4 上下文",
+      "row": 2,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "slots",
+          "type": "ecsp_host_slot_t[]",
+          "visibility": "private"
+        },
+        {
+          "name": "in_step",
+          "type": "uint8_t",
+          "visibility": "private"
+        }
+      ],
+      "methods": [
+        {
+          "name": "ecsp_host_init",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_host_submit",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_host_step",
+          "visibility": "public"
+        },
+        {
+          "name": "ecsp_host_session",
+          "visibility": "public"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 159,
+          "end_line": 186,
+          "label": "host API"
+        }
+      ]
+    },
+    {
+      "id": "slot",
+      "label": "ecsp_host_slot_t",
+      "kind": "record",
+      "sublabel": "会话+事务轴",
+      "row": 2,
+      "col": 2,
+      "attributes": [
+        {
+          "name": "session",
+          "type": "ecsp_session_t",
+          "visibility": "private"
+        },
+        {
+          "name": "txn_state",
+          "type": "ecsp_txn_state_t",
+          "visibility": "private"
+        }
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 126,
+          "end_line": 157,
+          "label": "slot"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "id": "r1",
+      "from": "slave",
+      "to": "slave_cfg",
+      "kind": "composition",
+      "label": "cfg"
+    },
+    {
+      "id": "r2",
+      "from": "slave_cfg",
+      "to": "cmd_table",
+      "kind": "association",
+      "label": "板卡表"
+    },
+    {
+      "id": "r3",
+      "from": "slave",
+      "to": "frame",
+      "kind": "dependency",
+      "label": "扫帧"
+    },
+    {
+      "id": "r4",
+      "from": "host",
+      "to": "host_cfg",
+      "kind": "composition",
+      "label": "cfg"
+    },
+    {
+      "id": "r5",
+      "from": "host",
+      "to": "slot",
+      "kind": "composition",
+      "label": "槽位"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主机侧同样用帧与目录",
+      "items": [
+        "host 经 L1 编解码帧，经 L2/板卡表读应答时限",
+        "图中省略交叉依赖以免遮挡槽位与 cfg 关系"
+      ]
+    }
+  ]
+}

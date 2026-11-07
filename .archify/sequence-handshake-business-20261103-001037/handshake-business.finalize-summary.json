@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "sequence",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\candidate.json",
+    "sha256": "e019718749e941babfd6ada0081df77d39694e390e11b651cd2cee0ea6996344",
+    "bytes": 5054
+  },
+  "artifact": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\handshake-business.html",
+    "sha256": "764753d3087bd9c7c8f59e7097e01c61eebb7cc9822bd5f2df71a9444128fc20",
+    "bytes": 839802
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\handshake-business.finalize.json",
+    "summaryReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\handshake-business.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\sequence-handshake-business-20261103-001037\\handshake-business.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-02T15:45:55.791Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4983,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

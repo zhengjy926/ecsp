@@ -1,0 +1,332 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-layers-20261103-001037\\candidate.json",
+    "sha256": "1ded008ac486f759a6f02f87adef3a9693f57e34ec39a9aace5a0f82344ce2b2",
+    "bytes": 10310
+  },
+  "artifact": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-layers-20261103-001037\\ecsp-layers.html",
+    "sha256": "0f059c5996d282ddeb727c7f11aaa2f5bbc7913da6a6a21d0b982fc2bfd58d35",
+    "bytes": 861881
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-layers-20261103-001037\\review-2\\ecsp-layers.finalize.json",
+    "summaryReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-layers-20261103-001037\\review-2\\ecsp-layers.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-layers-20261103-001037\\review-2\\ecsp-layers.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-02T15:45:55.791Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5557,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 7,
+      "routesOverSuggestedBends": 7,
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "app-to-host",
+            "from": "host-app",
+            "to": "l4-host",
+            "label": "submit / step",
+            "collectionIndex": 0,
+            "artifactIndex": 1
+          },
+          "right": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "point": [
+            216,
+            238.95000000000027
+          ]
+        },
+        {
+          "left": {
+            "id": "host-to-link",
+            "from": "l4-host",
+            "to": "byte-link",
+            "label": "tx_drain",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "point": [
+            216,
+            282
+          ],
+          "sharedNode": "byte-link"
+        },
+        {
+          "left": {
+            "id": "link-to-slave",
+            "from": "byte-link",
+            "to": "l3-slave",
+            "label": "slave_rx",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "right": {
+            "id": "host-uses-catalog",
+            "from": "l4-host",
+            "to": "l2-catalog",
+            "label": "应答时限",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "point": [
+            456,
+            432
+          ]
+        },
+        {
+          "left": {
+            "id": "link-to-host",
+            "from": "byte-link",
+            "to": "l4-host",
+            "label": "host_rx",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "right": {
+            "id": "host-uses-frame",
+            "from": "l4-host",
+            "to": "l1-frame",
+            "label": "编解码",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "point": [
+            298,
+            322
+          ],
+          "sharedNode": "l4-host"
+        },
+        {
+          "left": {
+            "id": "slave-to-board",
+            "from": "l3-slave",
+            "to": "board-cmds",
+            "label": "板卡 handler",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "slave-to-txn",
+            "from": "l3-slave",
+            "to": "txn-cache",
+            "label": "命中回放",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "point": [
+            655.5,
+            188.64285714285714
+          ],
+          "sharedNode": "l3-slave"
+        },
+        {
+          "left": {
+            "id": "slave-uses-frame",
+            "from": "l3-slave",
+            "to": "l1-frame",
+            "label": "扫帧",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "right": {
+            "id": "host-uses-catalog",
+            "from": "l4-host",
+            "to": "l2-catalog",
+            "label": "应答时限",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "point": [
+            432.5,
+            430.3888888888889
+          ]
+        },
+        {
+          "left": {
+            "id": "slave-to-longrun",
+            "from": "l3-slave",
+            "to": "long-run",
+            "label": "受理长耗时",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "fw-embeds-slave",
+            "from": "fw-f429",
+            "to": "l3-slave",
+            "label": "init / step",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            645,
+            376
+          ],
+          "sharedNode": "l3-slave"
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "app-to-host",
+            "from": "host-app",
+            "to": "l4-host",
+            "label": "submit / step",
+            "collectionIndex": 0,
+            "artifactIndex": 1
+          },
+          "bends": 3,
+          "stretch": 1.322
+        },
+        {
+          "relationship": {
+            "id": "link-to-slave",
+            "from": "byte-link",
+            "to": "l3-slave",
+            "label": "slave_rx",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "bends": 3,
+          "stretch": 1.087
+        },
+        {
+          "relationship": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "bends": 4,
+          "stretch": 1.079
+        },
+        {
+          "relationship": {
+            "id": "link-to-host",
+            "from": "byte-link",
+            "to": "l4-host",
+            "label": "host_rx",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "slave-to-board",
+            "from": "l3-slave",
+            "to": "board-cmds",
+            "label": "板卡 handler",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 3,
+          "stretch": 1.122
+        },
+        {
+          "relationship": {
+            "id": "slave-to-txn",
+            "from": "l3-slave",
+            "to": "txn-cache",
+            "label": "命中回放",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "bends": 4,
+          "stretch": 1.402
+        },
+        {
+          "relationship": {
+            "id": "fw-to-flash",
+            "from": "fw-f429",
+            "to": "flash-nvm",
+            "label": "0x03 / 0x05",
+            "collectionIndex": 14,
+            "artifactIndex": 15
+          },
+          "bends": 3,
+          "stretch": 1.127,
+          "directCorridorBlockers": [
+            {
+              "id": "board-cmds",
+              "label": "板卡命令表",
+              "box": [
+                900,
+                210,
+                150,
+                64
+              ]
+            }
+          ]
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "byte-link has 4 relationships facing its right side, which fits 3 ports: make that side at least 74px, or move some of those neighbours so they face another side of byte-link.",
+      "host-app → l4-host crosses l3-slave → byte-link: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "l4-host → byte-link and l3-slave → byte-link cross next to byte-link: move node l4-host or l3-slave so the two reach byte-link from different sides (for example one level with it, one directly above or below it).",
+      "byte-link → l3-slave crosses l4-host → l2-catalog: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "byte-link → l4-host and l4-host → l1-frame cross next to l4-host: move node byte-link or l1-frame so the two reach l4-host from different sides (for example one level with it, one directly above or below it).",
+      "l3-slave → board-cmds and l3-slave → txn-cache cross next to l3-slave: move node board-cmds or txn-cache so the two reach l3-slave from different sides (for example one level with it, one directly above or below it).",
+      "l3-slave → l1-frame crosses l4-host → l2-catalog: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "l3-slave → long-run and fw-f429 → l3-slave cross next to l3-slave: move node long-run or fw-f429 so the two reach l3-slave from different sides (for example one level with it, one directly above or below it)."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

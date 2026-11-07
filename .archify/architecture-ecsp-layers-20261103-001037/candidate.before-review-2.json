@@ -1,0 +1,478 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ECSP 分层与边界",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-ecsp-layers-20261103-001037/ecsp-layers.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "components": [
+    {
+      "id": "host-app",
+      "type": "external",
+      "label": "主机产品代码",
+      "sublabel": "调用方缓冲 / now_ms",
+      "pos": [
+        40,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 106,
+          "end_line": 120,
+          "label": "caller-owned cfg"
+        }
+      ]
+    },
+    {
+      "id": "l4-host",
+      "type": "backend",
+      "label": "L4 主机链路",
+      "sublabel": "会话轴 + 事务轴",
+      "tag": "ECSP_ENABLE_HOST",
+      "pos": [
+        240,
+        210
+      ],
+      "size": [
+        150,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 243,
+          "end_line": 271,
+          "label": "submit gates"
+        },
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 823,
+          "end_line": 863,
+          "label": "host_step"
+        },
+        {
+          "path": "include/ecsp/host.h",
+          "line": 42,
+          "end_line": 72,
+          "label": "dual axes"
+        }
+      ]
+    },
+    {
+      "id": "l1-frame",
+      "type": "backend",
+      "label": "L1 帧层",
+      "sublabel": "scan / encode / CRC",
+      "pos": [
+        420,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/core/frame.c",
+          "line": 7,
+          "end_line": 65,
+          "label": "frame_scan"
+        },
+        {
+          "path": "include/ecsp/frame.h",
+          "line": 7,
+          "end_line": 26,
+          "label": "frame layout"
+        }
+      ]
+    },
+    {
+      "id": "l2-catalog",
+      "type": "backend",
+      "label": "L2 命令目录",
+      "sublabel": "0x01-0x12 元数据",
+      "pos": [
+        580,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/core/cmds.c",
+          "line": 28,
+          "end_line": 70,
+          "label": "g_catalog"
+        },
+        {
+          "path": "src/ecsp/core/cmds.c",
+          "line": 86,
+          "end_line": 124,
+          "label": "catalog API"
+        }
+      ]
+    },
+    {
+      "id": "l3-slave",
+      "type": "backend",
+      "label": "L3 从机引擎",
+      "sublabel": "9 步管线 / session",
+      "tag": "ECSP_ENABLE_SLAVE",
+      "pos": [
+        760,
+        210
+      ],
+      "size": [
+        150,
+        68
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 506,
+          "end_line": 580,
+          "label": "slave_step"
+        },
+        {
+          "path": "include/ecsp/slave.h",
+          "line": 11,
+          "end_line": 30,
+          "label": "pipeline order"
+        }
+      ]
+    },
+    {
+      "id": "txn-cache",
+      "type": "database",
+      "label": "事务缓存",
+      "sublabel": "(cmd, seq) 整帧回放",
+      "pos": [
+        760,
+        60
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/slave/txn_cache.c",
+          "line": 9,
+          "end_line": 59,
+          "label": "FIFO cache"
+        }
+      ]
+    },
+    {
+      "id": "long-run",
+      "type": "backend",
+      "label": "长耗时",
+      "sublabel": "0x08 / 0x0C",
+      "pos": [
+        600,
+        60
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/ecsp/slave/long_run.c",
+          "line": 9,
+          "end_line": 41,
+          "label": "exec + result"
+        },
+        {
+          "path": "include/ecsp/host.h",
+          "line": 21,
+          "end_line": 29,
+          "label": "wait-result"
+        }
+      ]
+    },
+    {
+      "id": "byte-link",
+      "type": "messagebus",
+      "label": "字节链路",
+      "sublabel": "虚拟链路 / USART",
+      "pos": [
+        480,
+        390
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "test/integ/two_instance.c",
+          "line": 302,
+          "end_line": 356,
+          "label": "deliver_host"
+        },
+        {
+          "path": "test/integ/two_instance.c",
+          "line": 359,
+          "end_line": 386,
+          "label": "deliver_slave"
+        },
+        {
+          "path": "docs/specs/ecsp-impl-spec.md",
+          "line": 40,
+          "end_line": 61,
+          "label": "virtual-link seam"
+        }
+      ]
+    },
+    {
+      "id": "board-cmds",
+      "type": "external",
+      "label": "板卡命令表",
+      "sublabel": "0x30-0xEF 注入",
+      "pos": [
+        980,
+        210
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "board/f429/bringup.c",
+          "line": 71,
+          "end_line": 79,
+          "label": "0x30-0x33"
+        },
+        {
+          "path": "board/f429/bringup.h",
+          "line": 4,
+          "end_line": 12,
+          "label": "not in library"
+        }
+      ]
+    },
+    {
+      "id": "fw-f429",
+      "type": "backend",
+      "label": "F429 从机固件",
+      "sublabel": "USART + step 循环",
+      "pos": [
+        980,
+        390
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "board/f429/fw/main.c",
+          "line": 69,
+          "end_line": 95,
+          "label": "slave_init"
+        },
+        {
+          "path": "board/f429/fw/main.c",
+          "line": 43,
+          "end_line": 46,
+          "label": "USART RX"
+        }
+      ]
+    },
+    {
+      "id": "flash-nvm",
+      "type": "database",
+      "label": "身份 NVM",
+      "sublabel": "Flash Sector-11",
+      "pos": [
+        980,
+        60
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "board/f429/fw/main.c",
+          "line": 62,
+          "end_line": 67,
+          "label": "identity commit"
+        },
+        {
+          "path": "include/ecsp/slave.h",
+          "line": 56,
+          "end_line": 73,
+          "label": "caller NVM"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "ECSP 协议库 src/ecsp",
+      "wraps": [
+        "l4-host",
+        "l1-frame",
+        "l2-catalog",
+        "l3-slave",
+        "txn-cache",
+        "long-run"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "板卡 / 产品侧 board/",
+      "wraps": [
+        "board-cmds",
+        "fw-f429",
+        "flash-nvm"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "app-to-host",
+      "from": "host-app",
+      "to": "l4-host",
+      "label": "submit / step",
+      "variant": "emphasis"
+    },
+    {
+      "id": "host-to-link",
+      "from": "l4-host",
+      "to": "byte-link",
+      "label": "tx_drain"
+    },
+    {
+      "id": "link-to-slave",
+      "from": "byte-link",
+      "to": "l3-slave",
+      "label": "slave_rx",
+      "variant": "emphasis"
+    },
+    {
+      "id": "slave-to-link",
+      "from": "l3-slave",
+      "to": "byte-link",
+      "label": "应答 / 事件",
+      "variant": "dashed"
+    },
+    {
+      "id": "link-to-host",
+      "from": "byte-link",
+      "to": "l4-host",
+      "label": "host_rx",
+      "variant": "dashed"
+    },
+    {
+      "id": "slave-to-board",
+      "from": "l3-slave",
+      "to": "board-cmds",
+      "label": "板卡 handler"
+    },
+    {
+      "id": "host-uses-frame",
+      "from": "l4-host",
+      "to": "l1-frame",
+      "label": "编解码"
+    },
+    {
+      "id": "slave-uses-frame",
+      "from": "l3-slave",
+      "to": "l1-frame",
+      "label": "扫帧"
+    },
+    {
+      "id": "host-uses-catalog",
+      "from": "l4-host",
+      "to": "l2-catalog",
+      "label": "应答时限"
+    },
+    {
+      "id": "slave-uses-catalog",
+      "from": "l3-slave",
+      "to": "l2-catalog",
+      "label": "类别 / 长度"
+    },
+    {
+      "id": "slave-to-txn",
+      "from": "l3-slave",
+      "to": "txn-cache",
+      "label": "命中回放",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "slave-to-longrun",
+      "from": "l3-slave",
+      "to": "long-run",
+      "label": "受理长耗时"
+    },
+    {
+      "id": "fw-embeds-slave",
+      "from": "fw-f429",
+      "to": "l3-slave",
+      "label": "init / step",
+      "variant": "dashed"
+    },
+    {
+      "id": "fw-provides-table",
+      "from": "fw-f429",
+      "to": "board-cmds",
+      "label": "注入表",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "fw-to-flash",
+      "from": "fw-f429",
+      "to": "flash-nvm",
+      "label": "0x03 / 0x05",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "分层裁剪",
+      "items": [
+        "从机固件只开 L1-L3；主机侧开 L1、L2、L4",
+        "L3 与 L4 互不引用，同进程可并存多实例"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "硬约束",
+      "items": [
+        "C99、零动态分配、无可变全局、库内不取时钟",
+        "非阻塞事件驱动；调用方推入 now_ms 与收发缓冲"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "板卡边界",
+      "items": [
+        "0x30-0xEF 语义留在 board/，以编译期命令表注入",
+        "身份 NVM 与 USART 属于产品，不进协议库"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+﻿[
+    {
+        "type":  "architecture",
+        "folder":  "architecture-ecsp-layers-20261103-001037",
+        "ok":  true,
+        "failed":  null,
+        "status":  "pass"
+    },
+    {
+        "type":  "lifecycle",
+        "folder":  "lifecycle-host-session-20261103-001037",
+        "ok":  true,
+        "failed":  null,
+        "status":  "pass"
+    },
+    {
+        "type":  "lifecycle",
+        "folder":  "lifecycle-host-txn-20261103-001037",
+        "ok":  false,
+        "failed":  "validate",
+        "status":  "fail"
+    },
+    {
+        "type":  "sequence",
+        "folder":  "sequence-handshake-business-20261103-001037",
+        "ok":  false,
+        "failed":  "validate",
+        "status":  "fail"
+    },
+    {
+        "type":  "workflow",
+        "folder":  "workflow-slave-pipeline-20261103-001037",
+        "ok":  false,
+        "failed":  "validate",
+        "status":  "fail"
+    },
+    {
+        "type":  "tree",
+        "folder":  "tree-source-modules-20261103-001037",
+        "ok":  true,
+        "failed":  null,
+        "status":  "pass"
+    },
+    {
+        "type":  "class",
+        "folder":  "class-core-types-20261103-001037",
+        "ok":  false,
+        "failed":  "validate",
+        "status":  "fail"
+    }
+]

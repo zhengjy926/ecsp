@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "diagram_type": "tree",
+  "meta": {
+    "title": "ECSP 源码模块树",
+    "locale": "zh-CN",
+    "output": ".archify/tree-source-modules-20261103-001037/source-modules.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "layout": {
+    "direction": "right"
+  },
+  "nodes": [
+    {
+      "id": "root",
+      "label": "ecsp",
+      "sublabel": "协议参考实现",
+      "sources": [
+        {
+          "path": "docs/specs/ecsp-impl-spec.md",
+          "line": 31,
+          "end_line": 62,
+          "label": "layout"
+        }
+      ]
+    },
+    {
+      "id": "include",
+      "label": "include/ecsp",
+      "parent": "root",
+      "sublabel": "公共头"
+    },
+    {
+      "id": "src",
+      "label": "src/ecsp",
+      "parent": "root",
+      "sublabel": "库实现"
+    },
+    {
+      "id": "board",
+      "label": "board/f429",
+      "parent": "root",
+      "sublabel": "板卡注入",
+      "sources": [
+        {
+          "path": "board/f429/bringup.h",
+          "line": 4,
+          "end_line": 12,
+          "label": "board cmds"
+        }
+      ]
+    },
+    {
+      "id": "test",
+      "label": "test",
+      "parent": "root",
+      "sublabel": "单测/互操作"
+    },
+    {
+      "id": "h_frame",
+      "label": "frame/bytes/crc",
+      "parent": "include",
+      "sublabel": "L1"
+    },
+    {
+      "id": "h_cmds",
+      "label": "cmds.h",
+      "parent": "include",
+      "sublabel": "L2"
+    },
+    {
+      "id": "h_slave",
+      "label": "slave.h",
+      "parent": "include",
+      "sublabel": "L3"
+    },
+    {
+      "id": "h_host",
+      "label": "host.h",
+      "parent": "include",
+      "sublabel": "L4"
+    },
+    {
+      "id": "core",
+      "label": "core/",
+      "parent": "src",
+      "sublabel": "L1+L2",
+      "sources": [
+        {
+          "path": "src/ecsp/core/frame.c",
+          "line": 7,
+          "end_line": 20,
+          "label": "frame.c"
+        }
+      ]
+    },
+    {
+      "id": "slave_dir",
+      "label": "slave/",
+      "parent": "src",
+      "sublabel": "引擎/会话/缓存",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 506,
+          "end_line": 520,
+          "label": "engine"
+        }
+      ]
+    },
+    {
+      "id": "host_dir",
+      "label": "host/",
+      "parent": "src",
+      "sublabel": "link.c",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 167,
+          "end_line": 180,
+          "label": "host_init"
+        }
+      ]
+    },
+    {
+      "id": "bringup",
+      "label": "bringup 0x30-33",
+      "parent": "board"
+    },
+    {
+      "id": "fw",
+      "label": "fw/ 从机固件",
+      "parent": "board",
+      "sources": [
+        {
+          "path": "board/f429/fw/main.c",
+          "line": 69,
+          "end_line": 95,
+          "label": "main"
+        }
+      ]
+    },
+    {
+      "id": "unit",
+      "label": "unit/",
+      "parent": "test"
+    },
+    {
+      "id": "integ",
+      "label": "integ/two_instance",
+      "parent": "test",
+      "sources": [
+        {
+          "path": "test/integ/two_instance.c",
+          "line": 1,
+          "end_line": 18,
+          "label": "virtual link"
+        }
+      ]
+    },
+    {
+      "id": "vectors",
+      "label": "vectors/",
+      "parent": "test"
+    }
+  ]
+}

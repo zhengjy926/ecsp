@@ -1,0 +1,229 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "主机会话轴状态机",
+    "locale": "zh-CN",
+    "output": ".archify/lifecycle-host-session-20261103-001037/host-session.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "mainPath": [
+    "disconnected",
+    "handshaking",
+    "handshaken",
+    "normal"
+  ],
+  "states": [
+    {
+      "id": "disconnected",
+      "type": "start",
+      "label": "未连接",
+      "sublabel": "DISCONNECTED",
+      "tag": "等待探测",
+      "step": "01",
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 43,
+          "end_line": 50,
+          "label": "ecsp_session_t"
+        },
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 213,
+          "end_line": 217,
+          "label": "init slot"
+        }
+      ]
+    },
+    {
+      "id": "handshaking",
+      "type": "active",
+      "label": "握手中",
+      "sublabel": "发 0x01",
+      "tag": "HANDSHAKING",
+      "step": "02",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 400,
+          "end_line": 406,
+          "label": "queue 0x01"
+        }
+      ]
+    },
+    {
+      "id": "handshaken",
+      "type": "waiting",
+      "label": "已握手",
+      "sublabel": "发/等 0x02",
+      "tag": "HANDSHAKEN",
+      "step": "03",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 665,
+          "end_line": 672,
+          "label": "0x01 OK"
+        }
+      ]
+    },
+    {
+      "id": "normal",
+      "type": "success",
+      "label": "正常通信",
+      "sublabel": "可 submit",
+      "tag": "NORMAL",
+      "step": "04",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 693,
+          "end_line": 698,
+          "label": "version match"
+        },
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 260,
+          "end_line": 264,
+          "label": "submit gate"
+        }
+      ]
+    },
+    {
+      "id": "version_mismatch",
+      "type": "failure",
+      "label": "版本不符",
+      "sublabel": "0x02 字节不等",
+      "tag": "终端",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 693,
+          "end_line": 698,
+          "label": "mismatch"
+        }
+      ]
+    },
+    {
+      "id": "offline",
+      "type": "failure",
+      "label": "掉线",
+      "sublabel": "静默/建立超时",
+      "tag": "OFFLINE",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 450,
+          "end_line": 456,
+          "label": "txn silence"
+        },
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 501,
+          "end_line": 505,
+          "label": "heartbeat drop"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "t1",
+      "from": "disconnected",
+      "to": "handshaking",
+      "label": "首拍探测 0x01"
+    },
+    {
+      "id": "t2",
+      "from": "handshaking",
+      "to": "handshaken",
+      "label": "0x01 应答 0x00"
+    },
+    {
+      "id": "t3",
+      "from": "handshaken",
+      "to": "normal",
+      "label": "0x02 版本相等"
+    },
+    {
+      "id": "t4",
+      "from": "handshaken",
+      "to": "version_mismatch",
+      "label": "版本不等",
+      "variant": "security"
+    },
+    {
+      "id": "t5",
+      "from": "handshaking",
+      "to": "disconnected",
+      "label": "三次无应答",
+      "variant": "dashed"
+    },
+    {
+      "id": "t6",
+      "from": "handshaking",
+      "to": "offline",
+      "label": "建立总时限",
+      "variant": "security"
+    },
+    {
+      "id": "t7",
+      "from": "handshaken",
+      "to": "disconnected",
+      "label": "0x02 三次无应答",
+      "variant": "dashed"
+    },
+    {
+      "id": "t8",
+      "from": "normal",
+      "to": "offline",
+      "label": "业务静默耗尽",
+      "variant": "security"
+    },
+    {
+      "id": "t9",
+      "from": "normal",
+      "to": "disconnected",
+      "label": "对端 0x01 上报重启",
+      "variant": "dashed",
+      "note": "先结束在途事务"
+    },
+    {
+      "id": "t10",
+      "from": "offline",
+      "to": "handshaking",
+      "label": "收到 0x01 上报再探测"
+    },
+    {
+      "id": "t11",
+      "from": "handshaking",
+      "to": "disconnected",
+      "label": "非 0x00 拒绝",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "双轴之一",
+      "items": [
+        "会话轴与事务轴互不折叠（ADR-0003）",
+        "仅 NORMAL 才允许业务 submit"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "失败出口",
+      "items": [
+        "版本不符停在 VERSION_MISMATCH",
+        "静默耗尽进 OFFLINE，需对端上报再探测"
+      ]
+    }
+  ]
+}

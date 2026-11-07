@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\candidate.json",
+    "sha256": "ac2dfc7b24f7f817ac66949583c78529e8fdea67f8fcc2fe95084939282a5fa0",
+    "bytes": 23295
+  },
+  "artifact": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\ecsp-overview.html",
+    "sha256": "c16e43c107f79255594a3ac8a96563946f5fcf9d5fa669872eca79996c4a1804",
+    "bytes": 860792
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\review-2\\ecsp-overview.finalize.json",
+    "summaryReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\review-2\\ecsp-overview.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\architecture-ecsp-overview-20261102-234203\\review-2\\ecsp-overview.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-02T15:45:55.791Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5441,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 5,
+      "routesOverSuggestedBends": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "app-to-host",
+            "from": "host-app",
+            "to": "l4-host",
+            "label": "submit / step",
+            "collectionIndex": 0,
+            "artifactIndex": 1
+          },
+          "right": {
+            "id": "link-to-slave",
+            "from": "byte-link",
+            "to": "l3-slave",
+            "label": "slave_rx",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "point": [
+            120,
+            240
+          ]
+        },
+        {
+          "left": {
+            "id": "host-to-link",
+            "from": "l4-host",
+            "to": "byte-link",
+            "label": "tx_drain",
+            "collectionIndex": 1,
+            "artifactIndex": 2
+          },
+          "right": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "point": [
+            294,
+            348
+          ],
+          "sharedNode": "byte-link"
+        },
+        {
+          "left": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "host-uses-frame",
+            "from": "l4-host",
+            "to": "l1-frame",
+            "label": "编解码",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "point": [
+            308,
+            348
+          ]
+        },
+        {
+          "left": {
+            "id": "slave-to-link",
+            "from": "l3-slave",
+            "to": "byte-link",
+            "label": "应答 / 事件",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "host-uses-catalog",
+            "from": "l4-host",
+            "to": "l2-catalog",
+            "label": "应答时限",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "point": [
+            322,
+            348
+          ]
+        },
+        {
+          "left": {
+            "id": "slave-uses-frame",
+            "from": "l3-slave",
+            "to": "l1-frame",
+            "label": "扫帧",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "right": {
+            "id": "host-uses-catalog",
+            "from": "l4-host",
+            "to": "l2-catalog",
+            "label": "应答时限",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "point": [
+            404,
+            376
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "fw-to-flash",
+            "from": "fw-f429",
+            "to": "flash-nvm",
+            "label": "0x03 / 0x05",
+            "collectionIndex": 14,
+            "artifactIndex": 15
+          },
+          "bends": 3,
+          "stretch": 1.124,
+          "directCorridorBlockers": [
+            {
+              "id": "board-cmds",
+              "label": "板卡命令表",
+              "box": [
+                900,
+                210,
+                150,
+                64
+              ]
+            }
+          ]
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "byte-link has 4 relationships facing its right side, which fits 3 ports: make that side at least 74px, or move some of those neighbours so they face another side of byte-link.",
+      "host-app → l4-host crosses byte-link → l3-slave: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "l4-host → byte-link and l3-slave → byte-link cross next to byte-link: move node l4-host or l3-slave so the two reach byte-link from different sides (for example one level with it, one directly above or below it).",
+      "l3-slave → byte-link crosses l4-host → l1-frame: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "l3-slave → byte-link crosses l4-host → l2-catalog: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "l3-slave → l1-frame crosses l4-host → l2-catalog: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

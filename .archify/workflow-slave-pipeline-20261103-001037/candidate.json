@@ -1,0 +1,394 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "从机决策管线",
+    "locale": "zh-CN",
+    "output": ".archify/workflow-slave-pipeline-20261103-001037/slave-pipeline.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "lanes": [
+    {
+      "id": "frame",
+      "label": "成帧"
+    },
+    {
+      "id": "gate",
+      "label": "准入闸门"
+    },
+    {
+      "id": "dedupe",
+      "label": "去重 / 忙"
+    },
+    {
+      "id": "exec",
+      "label": "校验与执行"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p1",
+      "label": "收帧",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "p2",
+      "label": "策略闸",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p3",
+      "label": "执行",
+      "fromCol": 4,
+      "toCol": 5
+    }
+  ],
+  "groups": [
+    {
+      "id": "silent",
+      "label": "静默丢弃",
+      "lane": "frame",
+      "fromCol": 0,
+      "toCol": 1,
+      "variant": "dashed"
+    },
+    {
+      "id": "reject",
+      "label": "拒绝应答",
+      "lane": "gate",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "security"
+    }
+  ],
+  "mainPath": [
+    "scan",
+    "addr",
+    "cmd",
+    "session",
+    "len",
+    "cache",
+    "busy",
+    "validate",
+    "handler"
+  ],
+  "nodes": [
+    {
+      "id": "scan",
+      "lane": "frame",
+      "col": 0,
+      "type": "backend",
+      "label": "1 扫帧/CRC",
+      "sublabel": "坏帧静默",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 534,
+          "end_line": 546,
+          "label": "step1"
+        }
+      ]
+    },
+    {
+      "id": "drop",
+      "lane": "gate",
+      "col": 0,
+      "type": "security",
+      "label": "丢弃",
+      "sublabel": "SKIPPED"
+    },
+    {
+      "id": "addr",
+      "lane": "gate",
+      "col": 1,
+      "type": "security",
+      "label": "2 地址",
+      "sublabel": "不匹配静默",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 548,
+          "end_line": 554,
+          "label": "step2"
+        }
+      ]
+    },
+    {
+      "id": "cmd",
+      "lane": "gate",
+      "col": 2,
+      "type": "backend",
+      "label": "3 命令",
+      "sublabel": "目录或板卡表",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 556,
+          "end_line": 579,
+          "label": "step3"
+        }
+      ]
+    },
+    {
+      "id": "rs04",
+      "lane": "frame",
+      "col": 2,
+      "type": "security",
+      "label": "0x04",
+      "sublabel": "未定义"
+    },
+    {
+      "id": "session",
+      "lane": "gate",
+      "col": 3,
+      "type": "backend",
+      "label": "4 会话",
+      "sublabel": "非 0x01 需就绪",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 582,
+          "end_line": 590,
+          "label": "step4"
+        }
+      ]
+    },
+    {
+      "id": "rs10",
+      "lane": "frame",
+      "col": 3,
+      "type": "security",
+      "label": "0x10",
+      "sublabel": "未握手"
+    },
+    {
+      "id": "len",
+      "lane": "dedupe",
+      "col": 3,
+      "type": "backend",
+      "label": "5 长度",
+      "sublabel": "req_len",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 592,
+          "end_line": 604,
+          "label": "step5"
+        }
+      ]
+    },
+    {
+      "id": "rs02",
+      "lane": "frame",
+      "col": 4,
+      "type": "security",
+      "label": "0x02",
+      "sublabel": "长度错"
+    },
+    {
+      "id": "cache",
+      "lane": "dedupe",
+      "col": 4,
+      "type": "database",
+      "label": "6 事务缓存",
+      "sublabel": "(cmd,seq)",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 606,
+          "end_line": 631,
+          "label": "step6"
+        }
+      ]
+    },
+    {
+      "id": "busy",
+      "lane": "exec",
+      "col": 4,
+      "type": "backend",
+      "label": "7 长耗时忙",
+      "sublabel": "放行标志",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 634,
+          "end_line": 649,
+          "label": "step7"
+        }
+      ]
+    },
+    {
+      "id": "rs11",
+      "lane": "frame",
+      "col": 5,
+      "type": "security",
+      "label": "0x11",
+      "sublabel": "忙"
+    },
+    {
+      "id": "validate",
+      "lane": "dedupe",
+      "col": 5,
+      "type": "backend",
+      "label": "8 参数",
+      "sublabel": "validate",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 652,
+          "end_line": 669,
+          "label": "step8"
+        }
+      ]
+    },
+    {
+      "id": "rs03",
+      "lane": "gate",
+      "col": 5,
+      "type": "security",
+      "label": "0x03",
+      "sublabel": "参数错"
+    },
+    {
+      "id": "handler",
+      "lane": "exec",
+      "col": 5,
+      "type": "backend",
+      "label": "9 handler",
+      "sublabel": "返回码即应答",
+      "sources": [
+        {
+          "path": "src/ecsp/slave/engine.c",
+          "line": 672,
+          "end_line": 698,
+          "label": "step9"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "scan",
+      "to": "addr",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e2",
+      "from": "scan",
+      "to": "drop",
+      "label": "坏帧",
+      "variant": "dashed",
+      "role": "error"
+    },
+    {
+      "id": "e3",
+      "from": "addr",
+      "to": "cmd",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e4",
+      "from": "cmd",
+      "to": "session",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e5",
+      "from": "cmd",
+      "to": "rs04",
+      "label": "无入口",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e6",
+      "from": "session",
+      "to": "len",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e7",
+      "from": "session",
+      "to": "rs10",
+      "label": "未就绪",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e8",
+      "from": "len",
+      "to": "cache",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e9",
+      "from": "len",
+      "to": "rs02",
+      "label": "长度",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e10",
+      "from": "cache",
+      "to": "busy",
+      "label": "未命中",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e11",
+      "from": "busy",
+      "to": "validate",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e12",
+      "from": "busy",
+      "to": "rs11",
+      "label": "拒绝",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e13",
+      "from": "validate",
+      "to": "handler",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e14",
+      "from": "validate",
+      "to": "rs03",
+      "label": "非法值",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "顺序固定",
+      "items": [
+        "ADR-0002：九步顺序不可重排",
+        "成帧失败与地址错均静默，不产生应答"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "缓存优先于忙",
+      "items": [
+        "命中 (cmd,seq) 整帧回放，不进 handler",
+        "忙门只挡无放行标志的命令"
+      ]
+    }
+  ]
+}

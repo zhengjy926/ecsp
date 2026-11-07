@@ -1,0 +1,196 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "主机事务轴状态机",
+    "locale": "zh-CN",
+    "output": ".archify/lifecycle-host-txn-20261103-001037/host-txn.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/zhengjy926/ecsp.git",
+      "revision": "1db2b2e845db65848b67437cf08dea2e519340d2",
+      "provider": "github"
+    }
+  },
+  "mainPath": [
+    "idle",
+    "queued",
+    "wait_resp",
+    "idle_done"
+  ],
+  "states": [
+    {
+      "id": "idle",
+      "type": "start",
+      "label": "空闲",
+      "sublabel": "TXN_IDLE",
+      "step": "01",
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 67,
+          "end_line": 72,
+          "label": "ecsp_txn_state_t"
+        }
+      ]
+    },
+    {
+      "id": "queued",
+      "type": "waiting",
+      "label": "待发送",
+      "sublabel": "submit 入队",
+      "step": "02",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 283,
+          "end_line": 295,
+          "label": "QUEUED"
+        }
+      ]
+    },
+    {
+      "id": "wait_resp",
+      "type": "active",
+      "label": "等待应答",
+      "sublabel": "含初发最多 3 次",
+      "step": "03",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 462,
+          "end_line": 483,
+          "label": "emit_queued"
+        },
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 438,
+          "end_line": 459,
+          "label": "progress_txn"
+        }
+      ]
+    },
+    {
+      "id": "wait_result",
+      "type": "waiting",
+      "label": "等待结果",
+      "sublabel": "受理后等事件/查询",
+      "tag": "0x08/0x0C",
+      "sources": [
+        {
+          "path": "src/ecsp/host/link.c",
+          "line": 776,
+          "end_line": 783,
+          "label": "accept+T_exec_max"
+        }
+      ]
+    },
+    {
+      "id": "idle_done",
+      "type": "success",
+      "label": "回空闲",
+      "sublabel": "回调恰一次",
+      "step": "04",
+      "sources": [
+        {
+          "path": "include/ecsp/host.h",
+          "line": 77,
+          "end_line": 94,
+          "label": "txn callback"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "a1",
+      "from": "idle",
+      "to": "queued",
+      "label": "submit（须 NORMAL）"
+    },
+    {
+      "id": "a2",
+      "from": "queued",
+      "to": "wait_resp",
+      "label": "step 写入 FIFO"
+    },
+    {
+      "id": "a3",
+      "from": "wait_resp",
+      "to": "idle_done",
+      "label": "普通应答到达"
+    },
+    {
+      "id": "a4",
+      "from": "wait_resp",
+      "to": "wait_result",
+      "variant": "emphasis"
+    },
+    {
+      "id": "a5",
+      "from": "wait_result",
+      "to": "idle_done",
+      "label": "结果事件/获取结果"
+    },
+    {
+      "id": "a6",
+      "from": "wait_resp",
+      "to": "idle_done",
+      "label": "重发耗尽 ECSP_E_TIMEOUT",
+      "variant": "security"
+    },
+    {
+      "id": "a7",
+      "from": "wait_resp",
+      "to": "idle_done",
+      "label": "掉线 ECSP_E_OFFLINE",
+      "variant": "dashed"
+    },
+    {
+      "id": "a8",
+      "from": "wait_result",
+      "to": "queued",
+      "label": "在途 0x07 抢占",
+      "variant": "security",
+      "note": "长耗时回调仍挂起直至复位应答"
+    },
+    {
+      "id": "a9",
+      "from": "wait_result",
+      "to": "wait_resp",
+      "variant": "dashed"
+    },
+    {
+      "id": "a10",
+      "from": "idle_done",
+      "to": "idle",
+      "label": "同轴复位"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "单从机单事务",
+      "items": [
+        "第二笔 submit 返回 ECSP_E_CAP",
+        "回调可再 submit，但不得重入本 host_step"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "长耗时",
+      "items": [
+        "受理不结束事务，进入 WAIT_RESULT",
+        "丢失结果事件后用目录三元组的获取结果兜底"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "WAIT_RESULT 往返",
+      "items": [
+        "0x00+T_exec_max 从等待应答进入等待结果",
+        "超时后主机发目录配对的获取结果，短暂回到等待应答"
+      ]
+    }
+  ]
+}

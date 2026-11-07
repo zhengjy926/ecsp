@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "0f9bddd1-9e78-4190-83bd-f108a8463914",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\workflow-slave-pipeline-20261103-001037\\candidate.json",
+  "output": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\workflow-slave-pipeline-20261103-001037\\slave-pipeline.html",
+  "specification": {
+    "sha256": "a2fc71d9c4abdcac4a53ef8d205fe48af08eea96cd0c28eff74129cd1986468a",
+    "bytes": 7966
+  },
+  "artifact": {
+    "sha256": "2d7acaa0f8224e1977a17dfac614dc2d4f8a365d82c1a14ac7177d9c67b8141f",
+    "bytes": 853249
+  }
+}

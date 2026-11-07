@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "3d9c9dca-d32e-4c0d-8921-68686c1acc70",
+  "status": "current",
+  "command": "deliver",
+  "type": "class",
+  "input": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\class-core-types-20261103-001037\\candidate.json",
+  "output": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\class-core-types-20261103-001037\\core-types.html",
+  "specification": {
+    "sha256": "153fa1a1c3820d9961bb54a22b7bc027ea8fda68aca5bdeea53109ebabf92562",
+    "bytes": 7111
+  },
+  "artifact": {
+    "sha256": "266e2cc476e293073680ff6a56fc84c42f9792a7149982895732730401c89585",
+    "bytes": 853355
+  }
+}

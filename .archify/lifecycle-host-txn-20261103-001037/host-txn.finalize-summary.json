@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "lifecycle",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\candidate.json",
+    "sha256": "e4f8160a81178bb6194b92e3ce87be227ce89691a1174dfea393f94cd0b7beeb",
+    "bytes": 4490
+  },
+  "artifact": {
+    "path": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\host-txn.html",
+    "sha256": "cce0472199499f8a2c508ed012838b7845d547a0eae8c08c9df04fe59e1fa862",
+    "bytes": 838469
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\host-txn.finalize.json",
+    "summaryReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\host-txn.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\zjy11\\Desktop\\ecsp\\.archify\\lifecycle-host-txn-20261103-001037\\host-txn.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-02T15:45:55.791Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4804,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "a7",
+            "from": "wait_resp",
+            "to": "idle_done",
+            "label": "掉线 ECSP_E_OFFLINE",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "bends": 2,
+          "stretch": 1.411
+        }
+      ],
+      "truncated": false
+    },
+    "repair": "Advisory only: this mode places or routes these relationships itself. Report them; do not remove relationships or meaning to reduce crossings."
+  }
+}
